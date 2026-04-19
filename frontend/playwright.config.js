@@ -1,7 +1,7 @@
 import { defineConfig } from "@playwright/test";
 
 export default defineConfig({
-  testDir: "./tests",
+  testDir: "./tests/e2e",
   timeout: 90_000,
   expect: {
     timeout: 10_000,
@@ -17,7 +17,7 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: "node tests/run-backend.mjs",
+      command: "node tests/e2e/run-backend.mjs",
       url: "http://127.0.0.1:8001/health",
       reuseExistingServer: true,
       timeout: 60_000,
