@@ -62,6 +62,7 @@ test("stores the access token and user payload after a successful login", async 
     name: "Alice Writer",
     email: "alice@example.com",
   });
+  expect(window.location.href).toBe("/dashboard");
 });
 
 /**
@@ -85,4 +86,33 @@ test("shows an inline error when login fails", async () => {
   await user.click(screen.getByRole("button", { name: "Login" }));
 
   expect(await screen.findByText("Invalid email or password")).toBeInTheDocument();
+});
+
+/**
+ * Verifies login resumes a pending share-link redemption by seeding the
+ * stored token, completing a successful login, and asserting that navigation
+ * targets the share-link route instead of the dashboard.
+ */
+test("redirects to the pending share link after login", async () => {
+  const user = userEvent.setup();
+  localStorage.setItem("pending_share_token", "share-token-9");
+  apiMock.post.mockResolvedValueOnce({
+    data: {
+      access_token: "token-456",
+      user_id: "user-456",
+      name: "Bob Reviewer",
+    },
+  });
+
+  renderWithAuth(<LoginPage />);
+
+  await user.type(screen.getByLabelText("Email"), "bob@example.com");
+  await user.type(screen.getByLabelText("Password"), "secret-pass-456");
+  await user.click(screen.getByRole("button", { name: "Login" }));
+
+  await waitFor(() => {
+    expect(localStorage.getItem("access_token")).toBe("token-456");
+  });
+
+  expect(window.location.href).toBe("/share/share-token-9");
 });
