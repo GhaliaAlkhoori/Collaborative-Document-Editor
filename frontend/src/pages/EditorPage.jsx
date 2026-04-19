@@ -96,7 +96,6 @@ function EditorPage() {
   const [versions, setVersions] = useState([]);
   const [versionError, setVersionError] = useState("");
   const [shareEmail, setShareEmail] = useState("");
-  const [shareRole, setShareRole] = useState("viewer");
   const [shareMessage, setShareMessage] = useState("");
   const [shareError, setShareError] = useState("");
   const [shareLinks, setShareLinks] = useState([]);
@@ -498,32 +497,33 @@ function EditorPage() {
     }
   };
 
-  const handleShare = async () => {
-    if (!shareEmail.trim()) {
+  const handleShare = () => {
+    const trimmedEmail = shareEmail.trim();
+    if (!trimmedEmail) {
+      setShareMessage("");
+      setShareError("Enter an email address first.");
       return;
     }
 
     setShareMessage("");
     setShareError("");
 
-    try {
-      await api.post(
-        `/api/v1/documents/${documentId}/share`,
-        {
-          user_email: shareEmail,
-          role: shareRole,
-        },
-        {
-          headers: authHeader(),
-        }
-      );
+    const subject = encodeURIComponent(`Shared document: ${title || "Untitled Document"}`);
+    const body = encodeURIComponent(
+      [
+        "Hi,",
+        "",
+        "Here is the document link:",
+        `${window.location.origin}/documents/${documentId}`,
+        "",
+        `Document: ${title || "Untitled Document"}`,
+        "",
+        "You may need to sign in before opening it.",
+      ].join("\n")
+    );
 
-      setShareMessage(`Shared successfully as ${shareRole}.`);
-      setShareEmail("");
-      await loadDocument();
-    } catch (err) {
-      setShareError(err?.response?.data?.detail || "Sharing failed.");
-    }
+    window.location.href = `mailto:${encodeURIComponent(trimmedEmail)}?subject=${subject}&body=${body}`;
+    setShareMessage("Email draft opened.");
   };
 
   const handleCreateShareLink = async () => {
@@ -743,24 +743,16 @@ function EditorPage() {
               <>
                 <div className="stack-list">
                   <div className="stack-item stack-item-form">
-                    <label className="field-label">Share by email</label>
+                    <label className="field-label">Email this document</label>
                     <input
+                      type="email"
                       className="input"
                       value={shareEmail}
                       onChange={(event) => setShareEmail(event.target.value)}
-                      placeholder="Collaborator email"
+                      placeholder="name@example.com"
                     />
-                    <select
-                      className="input"
-                      value={shareRole}
-                      onChange={(event) => setShareRole(event.target.value)}
-                    >
-                      <option value="viewer">Viewer</option>
-                      <option value="editor">Editor</option>
-                      <option value="owner">Owner</option>
-                    </select>
                     <button className="secondary-button" type="button" onClick={handleShare}>
-                      Share by email
+                      Email link
                     </button>
                   </div>
 
