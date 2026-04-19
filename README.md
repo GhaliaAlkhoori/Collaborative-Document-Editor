@@ -1,9 +1,31 @@
 # Collaborative Document Editor with AI Writing Assistant
 
-## Live Access (Local)
-Frontend: http://localhost:5174/login  
-Backend API Documentation: http://127.0.0.1:8001/docs  
+## Live Access & How to Run the Application
 
+Frontend: [http://localhost:5174/login](http://localhost:5174/login)  
+Backend API Documentation: [http://127.0.0.1:8001/docs](http://127.0.0.1:8001/docs)  
+
+---
+
+### How to Access the Application
+
+The links above are local development links, which means they will only work if the application is running on your machine.
+
+To run the full system, open two terminals and start both the backend and frontend together:
+
+```bash
+# Terminal 1 — Backend
+cd backend
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8001
+
+# Terminal 2 — Frontend
+cd frontend
+npm install
+npm run dev
+```
+
+To enable the live AI assistant, create `backend/.env` from `backend/.env.example` and add your `OPENAI_API_KEY` before starting the backend.
 ---
 
 ## Overview
@@ -76,13 +98,13 @@ Finally, I demonstrate version history by restoring a previous version of the do
 
 Several implementation decisions differ from the original architectural design. Instead of using a database, the system uses in-memory storage to simplify development and reduce setup complexity. Real-time collaboration features such as CRDTs or operational transforms were not fully implemented; instead, the system focuses on core document functionality.
 
-Additionally, the AI assistant uses a mock streaming implementation rather than integrating with an external large language model. These decisions were made to prioritize stability, clarity, and completion within the assignment scope.
+Additionally, the AI assistant can be connected to a live OpenAI model through `OPENAI_API_KEY`. If the key is missing, the backend rejects AI requests until it is configured. These decisions keep the project flexible for demos while still allowing real AI output.
 
 ---
 
 ## Known Limitations
 
-The system does not persist data after backend restart due to the use of in-memory storage. Real-time multi-user editing is not fully supported, and AI functionality is simulated rather than connected to a live model. Despite these limitations, the system demonstrates all required architectural and functional concepts.
+The system does not persist data after backend restart due to the use of in-memory storage. Real-time multi-user editing is not fully supported. Despite these limitations, the system demonstrates all required architectural and functional concepts.
 
 ---
 

@@ -1,6 +1,6 @@
 
-from datetime import datetime, timezone
-from typing import Dict, List, Any
+from datetime import datetime, timedelta, timezone
+from typing import Dict, List, Any, Optional
 import uuid
 
 
@@ -18,7 +18,15 @@ USERS_BY_EMAIL: Dict[str, Dict[str, Any]] = {}
 DOCUMENTS_BY_ID: Dict[str, Dict[str, Any]] = {}
 DOCUMENT_PERMISSIONS: Dict[str, Dict[str, str]] = {}
 DOCUMENT_VERSIONS: Dict[str, List[Dict[str, Any]]] = {}
+DOCUMENT_OPERATION_HISTORY: Dict[str, List[Dict[str, Any]]] = {}
 AI_LOGS: Dict[str, List[Dict[str, Any]]] = {}
+SHARE_LINKS_BY_TOKEN: Dict[str, Dict[str, Any]] = {}
+
+ROLE_PRIORITY = {
+    "viewer": 0,
+    "editor": 1,
+    "owner": 2,
+}
 
 
 def create_user(name: str, email: str, password_hash: str) -> Dict[str, Any]:
@@ -54,6 +62,7 @@ def create_document(owner_id: str, title: str) -> Dict[str, Any]:
             "saved_at": now_iso(),
         }
     ]
+    DOCUMENT_OPERATION_HISTORY[doc["document_id"]] = []
     return doc
 
 
@@ -67,3 +76,68 @@ def save_document_version(document_id: str) -> None:
             "saved_at": now_iso(),
         }
     )
+
+
+def grant_document_access(document_id: str, user_id: str, role: str) -> str:
+    current_role = DOCUMENT_PERMISSIONS.setdefault(document_id, {}).get(user_id)
+
+    if current_role and ROLE_PRIORITY.get(current_role, -1) >= ROLE_PRIORITY.get(role, -1):
+        return current_role
+
+    DOCUMENT_PERMISSIONS[document_id][user_id] = role
+    return role
+
+
+def create_share_link(
+    document_id: str,
+    created_by: str,
+    role: str,
+    expires_in_hours: Optional[int] = None,
+) -> Dict[str, Any]:
+    token = new_id()
+    expires_at = None
+
+    if expires_in_hours:
+        expires_at = (datetime.now(timezone.utc) + timedelta(hours=expires_in_hours)).isoformat()
+
+    share_link = {
+        "token": token,
+        "document_id": document_id,
+        "created_by": created_by,
+        "role": role,
+        "created_at": now_iso(),
+        "expires_at": expires_at,
+        "revoked_at": None,
+        "redeemed_by": [],
+    }
+
+    SHARE_LINKS_BY_TOKEN[token] = share_link
+    return share_link
+
+
+def list_document_share_links(document_id: str) -> List[Dict[str, Any]]:
+    return [
+        link
+        for link in SHARE_LINKS_BY_TOKEN.values()
+        if link["document_id"] == document_id
+    ]
+
+
+def revoke_share_link(token: str) -> Optional[Dict[str, Any]]:
+    share_link = SHARE_LINKS_BY_TOKEN.get(token)
+    if not share_link:
+        return None
+
+    share_link["revoked_at"] = now_iso()
+    return share_link
+
+
+def share_link_is_active(share_link: Dict[str, Any]) -> bool:
+    if share_link.get("revoked_at"):
+        return False
+
+    expires_at = share_link.get("expires_at")
+    if expires_at and datetime.fromisoformat(expires_at) <= datetime.now(timezone.utc):
+        return False
+
+    return True

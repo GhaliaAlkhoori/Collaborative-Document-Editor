@@ -13,6 +13,10 @@ from app.models import (
     CollaboratorEntry,
     ShareDocumentRequest,
     ShareDocumentResponse,
+    ShareLinkCreateRequest,
+    CreateShareLinkResponse,
+    ListShareLinksResponse,
+    ShareLinkEntry,
     ListVersionsResponse,
     VersionEntry,
     RestoreVersionResponse,
@@ -21,10 +25,16 @@ from app.storage import (
     DOCUMENTS_BY_ID,
     DOCUMENT_PERMISSIONS,
     DOCUMENT_VERSIONS,
+    USERS_BY_ID,
     USERS_BY_EMAIL,
     create_document,
+    create_share_link,
+    grant_document_access,
+    list_document_share_links,
     now_iso,
+    revoke_share_link,
     save_document_version,
+    share_link_is_active,
 )
 
 router = APIRouter(prefix="/api/v1/documents", tags=["Documents"])
@@ -44,6 +54,25 @@ def require_document_access(document_id: str, user_id: str):
         raise HTTPException(status_code=403, detail="Access denied")
 
     return doc, role
+
+
+def require_owner_access(document_id: str, user_id: str):
+    doc, role = require_document_access(document_id, user_id)
+    if role != "owner":
+        raise HTTPException(status_code=403, detail="Only owner can manage sharing")
+    return doc
+
+
+def serialize_share_link(share_link: dict) -> ShareLinkEntry:
+    return ShareLinkEntry(
+        token=share_link["token"],
+        role=share_link["role"],
+        created_at=share_link["created_at"],
+        expires_at=share_link.get("expires_at"),
+        revoked_at=share_link.get("revoked_at"),
+        redeemed_count=len(share_link.get("redeemed_by", [])),
+        is_active=share_link_is_active(share_link),
+    )
 
 
 @router.post("", response_model=CreateDocumentResponse)
@@ -77,16 +106,22 @@ def list_documents(current_user=Depends(get_current_user)):
                 )
             )
 
+    results.sort(key=lambda item: item.updated_at, reverse=True)
     return ListDocumentsResponse(documents=results)
 
 
 @router.get("/{document_id}", response_model=GetDocumentResponse)
 def get_document(document_id: str, current_user=Depends(get_current_user)):
-    doc, _role = require_document_access(document_id, current_user["user_id"])
+    doc, role = require_document_access(document_id, current_user["user_id"])
 
     collaborators = [
-        CollaboratorEntry(user_id=user_id, role=role)
-        for user_id, role in DOCUMENT_PERMISSIONS.get(document_id, {}).items()
+        CollaboratorEntry(
+            user_id=user_id,
+            role=permission_role,
+            name=USERS_BY_ID.get(user_id, {}).get("name"),
+            email=USERS_BY_ID.get(user_id, {}).get("email"),
+        )
+        for user_id, permission_role in DOCUMENT_PERMISSIONS.get(document_id, {}).items()
     ]
 
     return GetDocumentResponse(
@@ -94,6 +129,7 @@ def get_document(document_id: str, current_user=Depends(get_current_user)):
         title=doc["title"],
         content=doc["content"],
         owner_id=doc["owner_id"],
+        current_role=role,
         version=doc["version"],
         updated_at=doc["updated_at"],
         collaborators=collaborators,
@@ -110,6 +146,12 @@ def update_document(
 
     if role not in ["owner", "editor"]:
         raise HTTPException(status_code=403, detail="You do not have edit access")
+
+    if payload.base_version is not None and payload.base_version != doc["version"]:
+        raise HTTPException(
+            status_code=409,
+            detail="Document changed since your last synced version. Refresh and try saving again.",
+        )
 
     if payload.title is not None:
         doc["title"] = payload.title
@@ -135,23 +177,65 @@ def share_document(
     payload: ShareDocumentRequest,
     current_user=Depends(get_current_user),
 ):
-    doc, role = require_document_access(document_id, current_user["user_id"])
-
-    if role != "owner":
-        raise HTTPException(status_code=403, detail="Only owner can share document")
+    _doc = require_owner_access(document_id, current_user["user_id"])
 
     target_user = USERS_BY_EMAIL.get(payload.user_email.lower())
     if not target_user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    DOCUMENT_PERMISSIONS[document_id][target_user["user_id"]] = payload.role
+    granted_role = grant_document_access(document_id, target_user["user_id"], payload.role)
 
     return ShareDocumentResponse(
         document_id=document_id,
         user_id=target_user["user_id"],
-        role=payload.role,
+        role=granted_role,
         granted_at=now_iso(),
     )
+
+
+@router.post("/{document_id}/share-links", response_model=CreateShareLinkResponse)
+def create_document_share_link(
+    document_id: str,
+    payload: ShareLinkCreateRequest,
+    current_user=Depends(get_current_user),
+):
+    _doc = require_owner_access(document_id, current_user["user_id"])
+    share_link = create_share_link(
+        document_id=document_id,
+        created_by=current_user["user_id"],
+        role=payload.role,
+        expires_in_hours=payload.expires_in_hours,
+    )
+
+    return CreateShareLinkResponse(
+        document_id=document_id,
+        **serialize_share_link(share_link).model_dump(),
+    )
+
+
+@router.get("/{document_id}/share-links", response_model=ListShareLinksResponse)
+def list_document_links(document_id: str, current_user=Depends(get_current_user)):
+    _doc = require_owner_access(document_id, current_user["user_id"])
+    links = [
+        serialize_share_link(link)
+        for link in sorted(
+            list_document_share_links(document_id),
+            key=lambda item: item["created_at"],
+            reverse=True,
+        )
+    ]
+    return ListShareLinksResponse(links=links)
+
+
+@router.delete("/{document_id}/share-links/{token}", response_model=ShareLinkEntry)
+def revoke_document_link(document_id: str, token: str, current_user=Depends(get_current_user)):
+    _doc = require_owner_access(document_id, current_user["user_id"])
+    share_link = revoke_share_link(token)
+
+    if not share_link or share_link["document_id"] != document_id:
+        raise HTTPException(status_code=404, detail="Share link not found")
+
+    return serialize_share_link(share_link)
 
 
 @router.get("/{document_id}/versions", response_model=ListVersionsResponse)

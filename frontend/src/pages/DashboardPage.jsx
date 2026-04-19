@@ -19,13 +19,19 @@ function DashboardPage() {
         headers: authHeader(),
       });
       setDocuments(res.data.documents || []);
-    } catch (err) {
+    } catch {
       setError("Failed to load documents.");
     }
   };
 
   useEffect(() => {
-    loadDocuments();
+    const timeoutId = window.setTimeout(() => {
+      loadDocuments();
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
   }, []);
 
   const createDocument = async () => {
@@ -40,7 +46,7 @@ function DashboardPage() {
 
       setNewTitle("");
       window.location.href = `/documents/${res.data.document_id}`;
-    } catch (err) {
+    } catch {
       setError("Failed to create document.");
     }
   };

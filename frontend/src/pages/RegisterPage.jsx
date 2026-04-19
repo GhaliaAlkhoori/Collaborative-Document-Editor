@@ -98,6 +98,7 @@ function RegisterPage() {
           <div>
             <label style={{ fontWeight: "600" }}>Full Name</label>
             <input
+              aria-label="Full Name"
               name="name"
               value={form.name}
               onChange={handleChange}
@@ -115,6 +116,7 @@ function RegisterPage() {
           <div>
             <label style={{ fontWeight: "600" }}>Email</label>
             <input
+              aria-label="Email"
               name="email"
               value={form.email}
               onChange={handleChange}
@@ -132,6 +134,7 @@ function RegisterPage() {
           <div>
             <label style={{ fontWeight: "600" }}>Password</label>
             <input
+              aria-label="Password"
               name="password"
               value={form.password}
               onChange={handleChange}

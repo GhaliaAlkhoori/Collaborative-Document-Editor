@@ -26,6 +26,7 @@ function LoginPage() {
 
     try {
       const res = await api.post("/api/v1/auth/login", form);
+      const pendingShareToken = localStorage.getItem("pending_share_token");
 
       login(res.data.access_token, {
         user_id: res.data.user_id,
@@ -33,7 +34,7 @@ function LoginPage() {
         email: form.email,
       });
 
-      window.location.href = "/dashboard";
+      window.location.href = pendingShareToken ? `/share/${pendingShareToken}` : "/dashboard";
     } catch (err) {
       setError(err?.response?.data?.detail || "Login failed.");
     }
@@ -111,6 +112,7 @@ function LoginPage() {
               Email
             </label>
             <input
+              aria-label="Email"
               name="email"
               value={form.email}
               onChange={handleChange}
@@ -137,6 +139,7 @@ function LoginPage() {
               Password
             </label>
             <input
+              aria-label="Password"
               name="password"
               value={form.password}
               onChange={handleChange}

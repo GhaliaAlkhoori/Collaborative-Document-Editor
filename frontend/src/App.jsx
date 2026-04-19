@@ -3,6 +3,7 @@ import LoginPage from "./pages/LoginPage";
 import RegisterPage from "./pages/RegisterPage";
 import DashboardPage from "./pages/DashboardPage";
 import EditorPage from "./pages/EditorPage";
+import ShareLinkPage from "./pages/ShareLinkPage";
 
 function App() {
   const path = window.location.pathname;
@@ -14,6 +15,10 @@ function App() {
 
   if (path === "/register") {
     return <RegisterPage />;
+  }
+
+  if (path.startsWith("/share/")) {
+    return <ShareLinkPage />;
   }
 
   if (!token) {

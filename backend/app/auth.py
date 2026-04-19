@@ -6,6 +6,7 @@ from fastapi import Header, HTTPException
 from jose import jwt, JWTError
 from passlib.context import CryptContext
 from dotenv import load_dotenv
+
 load_dotenv()
 
 from app.storage import USERS_BY_ID
@@ -56,6 +57,10 @@ def get_bearer_token(authorization: Optional[str]) -> str:
 
 def get_current_user(authorization: Optional[str] = Header(default=None)):
     token = get_bearer_token(authorization)
+    return get_user_from_token(token)
+
+
+def get_user_from_token(token: str):
     user_id = decode_access_token(token)
 
     if not user_id or user_id not in USERS_BY_ID:
