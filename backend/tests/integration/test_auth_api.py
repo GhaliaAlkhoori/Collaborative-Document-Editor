@@ -1,5 +1,5 @@
 def test_register_and_login_return_a_bearer_access_token(client):
-    """Verify the auth API creates a user and returns a bearer token that the frontend can persist."""
+    """Verify the auth API creates a user, assigns a username, and returns bearer session tokens."""
     register_response = client.post(
         "/api/v1/auth/register",
         json={
@@ -19,9 +19,11 @@ def test_register_and_login_return_a_bearer_access_token(client):
 
     assert register_response.status_code == 200
     assert login_response.status_code == 200
+    assert register_response.json()["username"] == "alice"
     assert login_response.json()["token_type"] == "bearer"
     assert login_response.json()["access_token"]
     assert login_response.json()["refresh_token"]
+    assert login_response.json()["username"] == "alice"
 
 
 def test_refresh_rotates_tokens_and_rejects_reuse(client):

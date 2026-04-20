@@ -6,6 +6,7 @@ from pydantic import BaseModel, EmailStr, Field
 Role = Literal["owner", "editor", "viewer"]
 ShareLinkRole = Literal["editor", "viewer"]
 AIAction = Literal["rewrite", "summarize", "translate"]
+AIInteractionStatus = Literal["pending", "accepted", "rejected", "error"]
 
 
 class ErrorBody(BaseModel):
@@ -27,6 +28,7 @@ class RegisterRequest(BaseModel):
 class RegisterResponse(BaseModel):
     user_id: str
     name: str
+    username: str
     email: EmailStr
     created_at: str
 
@@ -44,6 +46,7 @@ class LoginResponse(BaseModel):
     refresh_expires_in: int
     user_id: str
     name: str
+    username: str
     email: EmailStr
 
 
@@ -58,6 +61,7 @@ class RefreshResponse(LoginResponse):
 class UserRecord(BaseModel):
     user_id: str
     name: str
+    username: str
     email: EmailStr
     password_hash: str
     created_at: str
@@ -85,6 +89,7 @@ class CollaboratorEntry(BaseModel):
     user_id: str
     role: Role
     name: Optional[str] = None
+    username: Optional[str] = None
     email: Optional[EmailStr] = None
 
 
@@ -124,15 +129,33 @@ class ListDocumentsResponse(BaseModel):
 
 
 class ShareDocumentRequest(BaseModel):
-    user_email: EmailStr
+    user_email: Optional[EmailStr] = None
+    username: Optional[str] = Field(default=None, min_length=1)
     role: Role
 
 
 class ShareDocumentResponse(BaseModel):
     document_id: str
     user_id: str
+    username: Optional[str] = None
     role: Role
     granted_at: str
+
+
+class InvitationEntry(BaseModel):
+    invitation_id: str
+    document_id: str
+    title: str
+    role: Role
+    sender_user_id: str
+    sender_name: Optional[str] = None
+    sender_username: Optional[str] = None
+    created_at: str
+    seen_at: Optional[str] = None
+
+
+class ListInvitationsResponse(BaseModel):
+    invitations: List[InvitationEntry]
 
 
 class ShareLinkCreateRequest(BaseModel):
@@ -207,3 +230,31 @@ class AIGenerateRequest(BaseModel):
 class AIRewriteRequest(BaseModel):
     document_id: str = Field(min_length=1)
     text: str = Field(min_length=1)
+
+
+class AIInteractionEntry(BaseModel):
+    interaction_id: str
+    document_id: str
+    user_id: str
+    action: AIAction
+    status: AIInteractionStatus
+    selected_text: str
+    prompt: str
+    model: str
+    response_text: str
+    reviewed_text: Optional[str] = None
+    tone: Optional[str] = None
+    target_language: Optional[str] = None
+    error_message: Optional[str] = None
+    created_at: str
+    updated_at: str
+
+
+class ListAIInteractionsResponse(BaseModel):
+    interactions: List[AIInteractionEntry]
+
+
+class UpdateAIInteractionStatusRequest(BaseModel):
+    document_id: str = Field(min_length=1)
+    status: Literal["accepted", "rejected"]
+    reviewed_text: Optional[str] = None

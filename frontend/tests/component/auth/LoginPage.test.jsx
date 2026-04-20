@@ -41,6 +41,7 @@ test("stores the access token and user payload after a successful login", async 
       refresh_token: "refresh-123",
       user_id: "user-123",
       name: "Alice Writer",
+      username: "alice-writer",
     },
   });
 
@@ -62,6 +63,7 @@ test("stores the access token and user payload after a successful login", async 
   expect(JSON.parse(localStorage.getItem("user"))).toEqual({
     user_id: "user-123",
     name: "Alice Writer",
+    username: "alice-writer",
     email: "alice@example.com",
   });
   expect(window.location.href).toBe("/dashboard");
@@ -104,6 +106,7 @@ test("redirects to the pending share link after login", async () => {
       refresh_token: "refresh-456",
       user_id: "user-456",
       name: "Bob Reviewer",
+      username: "bob-reviewer",
     },
   });
 

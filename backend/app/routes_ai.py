@@ -1,17 +1,26 @@
-
 import os
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
-try:
-    from openai import OpenAI
-except ImportError:  # pragma: no cover - handled at runtime when AI is invoked
-    OpenAI = None
-
+from app.ai_prompts import build_generation_plan, build_instructions
+from app.ai_provider import build_mock_text, get_ai_provider
 from app.auth import get_current_user
-from app.models import AIGenerateRequest, AIRewriteRequest
-from app.storage import DOCUMENTS_BY_ID, DOCUMENT_PERMISSIONS
+from app.models import (
+    AIGenerateRequest,
+    AIInteractionEntry,
+    AIRewriteRequest,
+    ListAIInteractionsResponse,
+    UpdateAIInteractionStatusRequest,
+)
+from app.storage import (
+    DOCUMENTS_BY_ID,
+    DOCUMENT_PERMISSIONS,
+    create_ai_interaction,
+    finalize_ai_interaction,
+    list_ai_interactions,
+    update_ai_interaction_status,
+)
 
 router = APIRouter(prefix="/api/v1/ai", tags=["AI"])
 
@@ -36,181 +45,97 @@ def require_ai_access(document_id: str, user_id: str) -> str:
     return role
 
 
-def get_openai_client() -> OpenAI:
-    if AI_MOCK_MODE:
-        return None
+def require_document_access(document_id: str, user_id: str) -> str:
+    document = DOCUMENTS_BY_ID.get(document_id)
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
 
-    if OpenAI is None:
-        raise HTTPException(
-            status_code=503,
-            detail="AI dependencies are not installed yet. Run pip install -r backend/requirements.txt and restart the backend.",
+    role = DOCUMENT_PERMISSIONS.get(document_id, {}).get(user_id)
+    if not role:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    return role
+
+
+def serialize_ai_interaction(interaction: dict) -> AIInteractionEntry:
+    return AIInteractionEntry(**interaction)
+
+
+def stream_and_record_text(provider, stream, document_id: str, interaction_id: str):
+    collected_chunks = []
+
+    try:
+        for chunk in provider.iter_text(stream):
+            collected_chunks.append(chunk)
+            yield chunk
+    except Exception as exc:
+        finalize_ai_interaction(
+            document_id,
+            interaction_id,
+            response_text="".join(collected_chunks),
+            status="error",
+            error_message=str(exc),
         )
-
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise HTTPException(
-            status_code=503,
-            detail="AI is not configured yet. Add OPENAI_API_KEY to backend/.env and restart the backend.",
+        raise
+    else:
+        finalize_ai_interaction(
+            document_id,
+            interaction_id,
+            response_text="".join(collected_chunks),
         )
-
-    return OpenAI(api_key=api_key)
-
-
-def build_instructions(payload: AIGenerateRequest) -> str:
-    tone = (payload.options.tone or "clear").strip()
-    action = payload.action
-
-    shared_rules = (
-        "Return only the transformed text with no prefacing, labels, quotation marks, "
-        "or extra commentary. Preserve important factual details and keep formatting natural. "
-        "Do not introduce new facts. Avoid generic filler, empty intensifiers, repeated ideas, "
-        "or broad concluding sentences that were not supported by the source text."
-    )
-
-    tone_rules = {
-        "formal": (
-            "Use polished, professional, precise wording and smooth transitions. "
-            "Sound composed and authoritative rather than casual."
-        ),
-        "friendly": (
-            "Use warm, natural, approachable language that sounds human and engaging. "
-            "Keep it lively and readable without becoming slangy."
-        ),
-        "concise": (
-            "Compress the content meaningfully by removing redundancy, tightening phrasing, "
-            "and reducing length by roughly 20 to 35 percent when possible."
-        ),
-    }
-    tone_guidance = tone_rules.get(
-        tone.lower(),
-        f"Adopt a clearly {tone} tone in the wording, rhythm, and sentence style.",
-    )
-
-    if action == "rewrite":
-        return (
-            f"You are an expert writing assistant. Rewrite the user's text in a {tone} tone. "
-            "Create a clearly rephrased version, not a near-copy with minor synonym swaps. "
-            "Restructure sentences where helpful, vary sentence openings, and change diction enough "
-            "that the rewrite feels noticeably different while preserving the same facts and intent. "
-            "If the source is already polished, still produce a distinct rewrite with a stronger tone shift. "
-            "Avoid line-by-line paraphrasing and avoid repeating the same descriptors or claims with only tiny wording changes. "
-            f"{tone_guidance} "
-            f"{shared_rules}"
-        )
-
-    if action == "summarize":
-        return (
-            f"You are an expert writing assistant. Summarize the user's text in a {tone} tone. "
-            "Keep the summary concise, readable, and faithful to the source. Focus on the most "
-            "important ideas only, and remove repetition instead of restating points. "
-            f"{tone_guidance} "
-            f"{shared_rules}"
-        )
-
-    target_language = (payload.options.target_language or "Arabic").strip()
-    return (
-        f"You are an expert translator and editor. Translate the user's text into {target_language}. "
-        f"Keep the output natural, accurate, and {tone} in tone when possible. Preserve meaning, "
-        "details, and structure without padding the translation or adding explanatory phrases. "
-        f"{tone_guidance} "
-        f"{shared_rules}"
-    )
-
-
-def get_reasoning_effort(payload: AIGenerateRequest) -> str:
-    configured = OPENAI_REASONING_EFFORT
-    if payload.action == "rewrite" and configured == "low":
-        return "medium"
-    return configured
-
-
-def get_text_options(payload: AIGenerateRequest) -> dict:
-    if payload.action == "summarize":
-        return {"verbosity": "low"}
-    return {"verbosity": OPENAI_VERBOSITY}
-
-
-def get_max_output_tokens(payload: AIGenerateRequest) -> int:
-    word_count = max(1, len(payload.selected_text.split()))
-
-    if payload.action == "summarize":
-        return min(280, max(80, int(word_count * 0.8)))
-
-    if payload.action == "translate":
-        return min(900, max(120, int(word_count * 2.1)))
-
-    return min(900, max(120, int(word_count * 2.0)))
-
-
-def create_generation_stream(client: OpenAI, payload: AIGenerateRequest):
-    if AI_MOCK_MODE or client is None:
-        return create_mock_generation_stream(payload)
-
-    return client.responses.create(
-        model=OPENAI_MODEL,
-        reasoning={"effort": get_reasoning_effort(payload)},
-        instructions=build_instructions(payload),
-        input=payload.selected_text,
-        text=get_text_options(payload),
-        max_output_tokens=get_max_output_tokens(payload),
-        stream=True,
-    )
-
-
-def build_mock_text(payload: AIGenerateRequest) -> str:
-    source = payload.selected_text.strip()
-    tone = (payload.options.tone or "clear").strip().lower()
-
-    if payload.action == "summarize":
-        sentences = [segment.strip() for segment in source.replace("\n", " ").split(".") if segment.strip()]
-        summary = ". ".join(sentences[:2]).strip()
-        return summary if summary.endswith(".") else f"{summary}."
-
-    if payload.action == "translate":
-        language = (payload.options.target_language or "Arabic").strip()
-        return f"[{language} translation preview] {source}"
-
-    lead_in = {
-        "formal": "This revised version presents the same ideas with a more polished tone.",
-        "friendly": "Here is a warmer, more conversational rewrite of the same idea.",
-        "concise": "Here is a tighter version that keeps the key meaning intact.",
-    }.get(tone, "Here is a rewritten version of the text.")
-
-    closing = "The revised draft keeps the original meaning while sounding more polished."
-    return f"{lead_in}\n\n{source}\n\n{closing}"
-
-
-def create_mock_generation_stream(payload: AIGenerateRequest):
-    text = build_mock_text(payload)
-    chunk_size = 24
-    for index in range(0, len(text), chunk_size):
-        yield text[index:index + chunk_size]
-
-
-def stream_generated_text(stream):
-    if AI_MOCK_MODE:
-        yield from stream
-        return
-
-    for event in stream:
-        if getattr(event, "type", "") == "response.output_text.delta":
-            delta = getattr(event, "delta", "")
-            if delta:
-                yield delta
 
 
 @router.post("/generate")
 def generate(payload: AIGenerateRequest, current_user=Depends(get_current_user)):
     require_ai_access(payload.document_id, current_user["user_id"])
-    client = get_openai_client()
+    generation_plan = build_generation_plan(
+        payload,
+        configured_effort=OPENAI_REASONING_EFFORT,
+        configured_verbosity=OPENAI_VERBOSITY,
+    )
+    provider = get_ai_provider(
+        mock_mode=AI_MOCK_MODE,
+        model_name=OPENAI_MODEL,
+        mock_text_builder=build_mock_text,
+    )
+    interaction = create_ai_interaction(
+        payload.document_id,
+        current_user["user_id"],
+        payload.action,
+        payload.selected_text,
+        generation_plan.instructions,
+        provider.model_name,
+        tone=payload.options.tone,
+        target_language=payload.options.target_language,
+    )
+
     try:
-        stream = create_generation_stream(client, payload)
+        stream = provider.create_stream(payload, generation_plan)
+    except HTTPException as exc:
+        finalize_ai_interaction(
+            payload.document_id,
+            interaction["interaction_id"],
+            response_text="",
+            status="error",
+            error_message=exc.detail,
+        )
+        raise
     except Exception as exc:
+        finalize_ai_interaction(
+            payload.document_id,
+            interaction["interaction_id"],
+            response_text="",
+            status="error",
+            error_message=str(exc),
+        )
         raise HTTPException(status_code=502, detail=f"AI request failed: {exc}") from exc
 
     return StreamingResponse(
-        stream_generated_text(stream),
+        stream_and_record_text(provider, stream, payload.document_id, interaction["interaction_id"]),
         media_type="text/plain",
+        headers={
+            "X-AI-Interaction-Id": interaction["interaction_id"],
+        },
     )
 
 
@@ -224,3 +149,44 @@ def rewrite(payload: AIRewriteRequest, current_user=Depends(get_current_user)):
         ),
         current_user=current_user,
     )
+
+
+@router.get("/documents/{document_id}/history", response_model=ListAIInteractionsResponse)
+def list_document_ai_history(document_id: str, current_user=Depends(get_current_user)):
+    require_document_access(document_id, current_user["user_id"])
+    interactions = [
+        serialize_ai_interaction(interaction)
+        for interaction in reversed(list_ai_interactions(document_id))
+    ]
+    return ListAIInteractionsResponse(interactions=interactions)
+
+
+@router.patch("/history/{interaction_id}", response_model=AIInteractionEntry)
+def update_document_ai_history(
+    interaction_id: str,
+    payload: UpdateAIInteractionStatusRequest,
+    current_user=Depends(get_current_user),
+):
+    require_ai_access(payload.document_id, current_user["user_id"])
+    existing_interaction = next(
+        (
+            interaction
+            for interaction in list_ai_interactions(payload.document_id)
+            if interaction["interaction_id"] == interaction_id
+        ),
+        None,
+    )
+    if not existing_interaction:
+        raise HTTPException(status_code=404, detail="AI interaction not found")
+
+    if existing_interaction["user_id"] != current_user["user_id"]:
+        raise HTTPException(status_code=403, detail="You cannot update another user's AI interaction")
+
+    interaction = update_ai_interaction_status(
+        payload.document_id,
+        interaction_id,
+        status=payload.status,
+        reviewed_text=payload.reviewed_text,
+    )
+
+    return serialize_ai_interaction(interaction)

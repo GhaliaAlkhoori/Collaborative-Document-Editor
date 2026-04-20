@@ -32,6 +32,7 @@ function AppShell({ title, subtitle, children, actions }) {
             </div>
             <div>
               <div className="user-name">{user?.name || "User"}</div>
+              {user?.username ? <div className="username-pill">@{user.username}</div> : null}
               <div className="user-email">{user?.email || ""}</div>
             </div>
           </div>

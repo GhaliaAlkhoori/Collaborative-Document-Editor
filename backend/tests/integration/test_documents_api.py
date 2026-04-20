@@ -148,6 +148,38 @@ def test_shared_editor_can_update_a_document(client, register_and_login):
     assert update_response.json()["version"] == 2
 
 
+def test_owner_can_share_a_document_by_username(client, register_and_login):
+    """Verify owners can grant access using a collaborator username instead of an email address."""
+    owner = register_and_login(name="Owner", email="owner@example.com")
+    editor = register_and_login(name="Editor User", email="editor@example.com")
+    create_response = client.post(
+        "/api/v1/documents",
+        json={"title": "Team Draft"},
+        headers=owner["headers"],
+    )
+    document_id = create_response.json()["document_id"]
+
+    share_response = client.post(
+        f"/api/v1/documents/{document_id}/share",
+        json={
+            "username": editor["username"],
+            "role": "editor",
+        },
+        headers=owner["headers"],
+    )
+    document_response = client.get(
+        f"/api/v1/documents/{document_id}",
+        headers=owner["headers"],
+    )
+
+    assert share_response.status_code == 200
+    assert share_response.json()["username"] == editor["username"]
+    assert any(
+        collaborator["username"] == editor["username"] and collaborator["role"] == "editor"
+        for collaborator in document_response.json()["collaborators"]
+    )
+
+
 def test_viewers_are_blocked_from_document_updates(client, register_and_login):
     """Verify crafted viewer requests still fail on the backend even when the caller knows the document ID."""
     owner = register_and_login(name="Owner", email="owner@example.com")

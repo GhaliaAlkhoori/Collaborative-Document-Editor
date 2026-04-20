@@ -40,6 +40,7 @@ def build_session_response(user: dict, *, response_model):
         refresh_expires_in=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
         user_id=user["user_id"],
         name=user["name"],
+        username=user["username"],
         email=user["email"],
     )
 
@@ -60,6 +61,7 @@ def register(payload: RegisterRequest):
     return RegisterResponse(
         user_id=user["user_id"],
         name=user["name"],
+        username=user["username"],
         email=user["email"],
         created_at=user["created_at"],
     )

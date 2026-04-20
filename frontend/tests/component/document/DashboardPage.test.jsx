@@ -25,6 +25,7 @@ vi.mock("../../../src/api/client", () => ({
 beforeEach(() => {
   apiMock.post.mockReset();
   apiMock.get.mockReset();
+  apiMock.patch.mockReset();
   apiMock.delete.mockReset();
 });
 
@@ -33,29 +34,50 @@ beforeEach(() => {
  * returned titles and roles so users can see what they can open.
  */
 test("loads and displays the current user's accessible documents", async () => {
-  apiMock.get.mockResolvedValueOnce({
-    data: {
-      documents: [
-        {
-          document_id: "doc-1",
-          title: "Project Plan",
-          role: "owner",
+  apiMock.get.mockImplementation((url) => {
+    if (url === "/api/v1/documents") {
+      return Promise.resolve({
+        data: {
+          documents: [
+            {
+              document_id: "doc-1",
+              title: "Project Plan",
+              role: "owner",
+            },
+            {
+              document_id: "doc-2",
+              title: "Shared Notes",
+              role: "editor",
+            },
+          ],
         },
-        {
-          document_id: "doc-2",
-          title: "Shared Notes",
-          role: "editor",
+      });
+    }
+
+    if (url === "/api/v1/invitations") {
+      return Promise.resolve({
+        data: {
+          invitations: [],
         },
-      ],
-    },
+      });
+    }
+
+    return Promise.reject(new Error(`Unexpected GET ${url}`));
   });
 
-  renderWithAuth(<DashboardPage />, { token: "token-123" });
+  renderWithAuth(<DashboardPage />, {
+    token: "token-123",
+    user: {
+      username: "owner-user",
+    },
+  });
 
   expect(await screen.findByText("Project Plan")).toBeInTheDocument();
   expect(screen.getByText("Shared Notes")).toBeInTheDocument();
   expect(screen.getByText("Role: owner")).toBeInTheDocument();
   expect(screen.getByText("Role: editor")).toBeInTheDocument();
+  expect(screen.getByText("@owner-user")).toBeInTheDocument();
+  expect(screen.getByText("Shared with you")).toBeInTheDocument();
 });
 
 /**
@@ -64,10 +86,24 @@ test("loads and displays the current user's accessible documents", async () => {
  */
 test("creates a new document with the current bearer token", async () => {
   const user = userEvent.setup();
-  apiMock.get.mockResolvedValueOnce({
-    data: {
-      documents: [],
-    },
+  apiMock.get.mockImplementation((url) => {
+    if (url === "/api/v1/documents") {
+      return Promise.resolve({
+        data: {
+          documents: [],
+        },
+      });
+    }
+
+    if (url === "/api/v1/invitations") {
+      return Promise.resolve({
+        data: {
+          invitations: [],
+        },
+      });
+    }
+
+    return Promise.reject(new Error(`Unexpected GET ${url}`));
   });
   apiMock.post.mockResolvedValueOnce({
     data: {
@@ -100,21 +136,35 @@ test("creates a new document with the current bearer token", async () => {
  */
 test("deletes an owned document from the dashboard", async () => {
   const user = userEvent.setup();
-  apiMock.get.mockResolvedValueOnce({
-    data: {
-      documents: [
-        {
-          document_id: "doc-1",
-          title: "Project Plan",
-          role: "owner",
+  apiMock.get.mockImplementation((url) => {
+    if (url === "/api/v1/documents") {
+      return Promise.resolve({
+        data: {
+          documents: [
+            {
+              document_id: "doc-1",
+              title: "Project Plan",
+              role: "owner",
+            },
+            {
+              document_id: "doc-2",
+              title: "Shared Notes",
+              role: "editor",
+            },
+          ],
         },
-        {
-          document_id: "doc-2",
-          title: "Shared Notes",
-          role: "editor",
+      });
+    }
+
+    if (url === "/api/v1/invitations") {
+      return Promise.resolve({
+        data: {
+          invitations: [],
         },
-      ],
-    },
+      });
+    }
+
+    return Promise.reject(new Error(`Unexpected GET ${url}`));
   });
   apiMock.delete.mockResolvedValueOnce({
     data: {
@@ -139,4 +189,82 @@ test("deletes an owned document from the dashboard", async () => {
   expect(screen.queryByText("Project Plan")).not.toBeInTheDocument();
   expect(screen.getByText("Document deleted.")).toBeInTheDocument();
   expect(screen.getByText("Shared Notes")).toBeInTheDocument();
+});
+
+/**
+ * Verifies invited users see newly shared documents in the invite inbox and
+ * mark the invite as seen before navigating into the document.
+ */
+test("shows recent invites and marks them seen when opened", async () => {
+  const user = userEvent.setup();
+  apiMock.get.mockImplementation((url) => {
+    if (url === "/api/v1/documents") {
+      return Promise.resolve({
+        data: {
+          documents: [
+            {
+              document_id: "doc-2",
+              title: "Shared Notes",
+              role: "editor",
+            },
+          ],
+        },
+      });
+    }
+
+    if (url === "/api/v1/invitations") {
+      return Promise.resolve({
+        data: {
+          invitations: [
+            {
+              invitation_id: "invite-1",
+              document_id: "doc-2",
+              title: "Shared Notes",
+              role: "editor",
+              sender_user_id: "owner-1",
+              sender_name: "Owner",
+              sender_username: "owner-user",
+              created_at: "2026-04-20T00:00:00Z",
+              seen_at: null,
+            },
+          ],
+        },
+      });
+    }
+
+    return Promise.reject(new Error(`Unexpected GET ${url}`));
+  });
+  apiMock.patch.mockResolvedValueOnce({
+    data: {
+      invitation_id: "invite-1",
+      seen_at: "2026-04-20T00:05:00Z",
+    },
+  });
+
+  renderWithAuth(<DashboardPage />, {
+    token: "token-123",
+    user: {
+      username: "editor-user",
+    },
+  });
+
+  expect(await screen.findByText("Recent invites")).toBeInTheDocument();
+  expect(screen.getByText("New invite")).toBeInTheDocument();
+  expect(screen.getByText(/Shared by Owner \(@owner-user\) as editor\./)).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "Open invited document" }));
+
+  await waitFor(() => {
+    expect(apiMock.patch).toHaveBeenCalledWith(
+      "/api/v1/invitations/invite-1/seen",
+      {},
+      {
+        headers: {
+          Authorization: "Bearer token-123",
+        },
+      }
+    );
+  });
+
+  expect(window.location.href).toBe("/documents/doc-2");
 });

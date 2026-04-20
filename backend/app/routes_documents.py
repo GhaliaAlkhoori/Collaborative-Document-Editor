@@ -28,6 +28,8 @@ from app.storage import (
     DOCUMENT_VERSIONS,
     USERS_BY_ID,
     USERS_BY_EMAIL,
+    USERS_BY_USERNAME,
+    create_invitation,
     create_document,
     create_share_link,
     delete_document,
@@ -75,6 +77,16 @@ def serialize_share_link(share_link: dict) -> ShareLinkEntry:
         redeemed_count=len(share_link.get("redeemed_by", [])),
         is_active=share_link_is_active(share_link),
     )
+
+
+def resolve_share_target(payload: ShareDocumentRequest) -> dict:
+    if payload.user_email:
+        return USERS_BY_EMAIL.get(payload.user_email.lower())
+
+    if payload.username:
+        return USERS_BY_USERNAME.get(payload.username.lower())
+
+    raise HTTPException(status_code=400, detail="Provide an email or username to share this document")
 
 
 @router.post("", response_model=CreateDocumentResponse)
@@ -132,6 +144,7 @@ def get_document(document_id: str, current_user=Depends(get_current_user)):
             user_id=user_id,
             role=permission_role,
             name=USERS_BY_ID.get(user_id, {}).get("name"),
+            username=USERS_BY_ID.get(user_id, {}).get("username"),
             email=USERS_BY_ID.get(user_id, {}).get("email"),
         )
         for user_id, permission_role in DOCUMENT_PERMISSIONS.get(document_id, {}).items()
@@ -192,15 +205,23 @@ def share_document(
 ):
     _doc = require_owner_access(document_id, current_user["user_id"])
 
-    target_user = USERS_BY_EMAIL.get(payload.user_email.lower())
+    target_user = resolve_share_target(payload)
     if not target_user:
         raise HTTPException(status_code=404, detail="User not found")
 
     granted_role = grant_document_access(document_id, target_user["user_id"], payload.role)
+    if target_user["user_id"] != current_user["user_id"]:
+        create_invitation(
+            document_id=document_id,
+            sender_user_id=current_user["user_id"],
+            recipient_user_id=target_user["user_id"],
+            role=granted_role,
+        )
 
     return ShareDocumentResponse(
         document_id=document_id,
         user_id=target_user["user_id"],
+        username=target_user.get("username"),
         role=granted_role,
         granted_at=now_iso(),
     )

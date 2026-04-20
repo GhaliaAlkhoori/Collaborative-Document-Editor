@@ -36,6 +36,7 @@ function LoginPage() {
         {
           user_id: res.data.user_id,
           name: res.data.name,
+          username: res.data.username,
           email: form.email,
         }
       );

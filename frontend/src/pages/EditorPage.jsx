@@ -3,13 +3,14 @@ import api, { ensureValidAccessToken } from "../api/client";
 import AIEditPanel from "../components/AIEditPanel";
 import CollaborativeTextarea from "../components/CollaborativeTextarea";
 import RichTextEditor from "../components/RichTextEditor";
-import { getStoredAccessToken, getStoredRefreshToken } from "../lib/session";
+import { getStoredAccessToken, getStoredRefreshToken, getStoredUser } from "../lib/session";
 import {
   applyTextOperation,
   diffToOperation,
   normalizeOperation,
   operationHasChanges,
   transformIndex,
+  transformOperation,
   transformPair,
 } from "../lib/textOperation";
 
@@ -98,6 +99,50 @@ function toRichTextContent(value) {
     .join("");
 }
 
+function previewText(text, maxLength = 140) {
+  const normalized = (text || "").replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "No text recorded.";
+  }
+
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, maxLength - 1)}…`;
+}
+
+function formatInteractionStatus(status) {
+  const label = status || "pending";
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+function formatParticipantActivity(participant) {
+  if (participant?.is_typing || participant?.activity_status === "typing") {
+    return "typing";
+  }
+
+  if (participant?.activity_status === "active") {
+    return "active";
+  }
+
+  return "idle";
+}
+
+function formatCollaboratorMeta(collaborator) {
+  const values = [collaborator?.email];
+
+  if (collaborator?.username) {
+    values.push(`@${collaborator.username}`);
+  }
+
+  if (!values.filter(Boolean).length) {
+    return collaborator?.user_id || "Unknown collaborator";
+  }
+
+  return values.filter(Boolean).join(" • ");
+}
+
 function EditorPage() {
   const documentId = window.location.pathname.split("/").pop();
 
@@ -105,16 +150,25 @@ function EditorPage() {
   const wsRef = useRef(null);
   const reconnectTimerRef = useRef(null);
   const cursorTimerRef = useRef(null);
+  const autoSaveTimerRef = useRef(null);
   const shouldReconnectRef = useRef(true);
   const pendingOpsRef = useRef([]);
   const currentContentRef = useRef("");
+  const lastSavedSnapshotRef = useRef({ title: "", content: "" });
+  const snapshotDirtyRef = useRef(false);
+  const saveInFlightRef = useRef(false);
+  const hasLoadedDocumentRef = useRef(false);
+  const lastAiChangeRef = useRef(null);
   const localSelectionRef = useRef({ start: 0, end: 0 });
+  const richSelectionRef = useRef({ start: 1, end: 1, text: "" });
   const localClientIdRef = useRef("");
+  const editorModeRef = useRef("rich");
   const serverVersionRef = useRef(1);
 
   const [title, setTitle] = useState("Untitled Document");
   const [content, setContent] = useState("");
   const [selection, setSelection] = useState({ start: 0, end: 0 });
+  const [richSelection, setRichSelection] = useState({ start: 1, end: 1, text: "" });
   const [documentVersion, setDocumentVersion] = useState(1);
   const [updatedAt, setUpdatedAt] = useState("");
   const [currentRole, setCurrentRole] = useState("viewer");
@@ -133,14 +187,20 @@ function EditorPage() {
   const [shareLinks, setShareLinks] = useState([]);
   const [shareLinkRole, setShareLinkRole] = useState("viewer");
   const [shareLinkExpiry, setShareLinkExpiry] = useState("24");
+  const [aiHistory, setAiHistory] = useState([]);
+  const [aiHistoryError, setAiHistoryError] = useState("");
   const [editorMode, setEditorMode] = useState("rich");
+  const [canUndoAiChange, setCanUndoAiChange] = useState(false);
 
   const authHeader = () => ({
     Authorization: `Bearer ${getStoredAccessToken()}`,
   });
 
-  const readOnly = currentRole === "viewer" || connectionState !== "connected";
+  const readOnly = currentRole === "viewer";
   const richTextValue = toRichTextContent(content);
+  const activeSelectedText =
+    editorMode === "rich" ? richSelection.text : content.slice(selection.start, selection.end);
+  const currentUser = getStoredUser();
 
   const loadVersions = async () => {
     try {
@@ -169,6 +229,19 @@ function EditorPage() {
     }
   };
 
+  const loadAiHistory = async () => {
+    try {
+      const response = await api.get(`/api/v1/ai/documents/${documentId}/history`, {
+        headers: authHeader(),
+      });
+      setAiHistory(response.data.interactions || []);
+      setAiHistoryError("");
+    } catch {
+      setAiHistory([]);
+      setAiHistoryError("Failed to load AI history.");
+    }
+  };
+
   const loadDocument = async () => {
     try {
       const response = await api.get(`/api/v1/documents/${documentId}`, {
@@ -176,14 +249,33 @@ function EditorPage() {
       });
 
       const document = response.data;
-      setTitle(document.title);
-      setContent(document.content || "");
+      const serverTitle = document.title;
+      const serverContent = document.content || "";
+      const hasLocalTitleDraft =
+        hasLoadedDocumentRef.current && title !== lastSavedSnapshotRef.current.title;
+      const hasLocalContentDraft =
+        pendingOpsRef.current.length > 0 ||
+        (hasLoadedDocumentRef.current &&
+          currentContentRef.current !== lastSavedSnapshotRef.current.content);
+
+      setTitle(hasLocalTitleDraft ? title : serverTitle);
+      setContent(hasLocalContentDraft ? currentContentRef.current : serverContent);
       setDocumentVersion(document.version || 1);
       setUpdatedAt(document.updated_at || "");
       setCurrentRole(document.current_role || "viewer");
       setCollaborators(document.collaborators || []);
-      currentContentRef.current = document.content || "";
       serverVersionRef.current = document.version || 1;
+      lastSavedSnapshotRef.current = {
+        title: serverTitle,
+        content: serverContent,
+      };
+      snapshotDirtyRef.current = hasLocalTitleDraft || hasLocalContentDraft;
+      if (!hasLocalContentDraft) {
+        currentContentRef.current = serverContent;
+      }
+      richSelectionRef.current = { start: 1, end: 1, text: "" };
+      setRichSelection({ start: 1, end: 1, text: "" });
+      hasLoadedDocumentRef.current = true;
       setError("");
     } catch {
       setError("Failed to load document.");
@@ -196,11 +288,22 @@ function EditorPage() {
       return;
     }
 
+    const activeMode = editorModeRef.current;
+    const nextSourceSelection = localSelectionRef.current;
+    const nextRichSelection = richSelectionRef.current;
+    const sourceSelectionText = currentContentRef.current.slice(
+      nextSourceSelection.start,
+      nextSourceSelection.end
+    );
+
     socket.send(
       JSON.stringify({
         type: "cursor",
-        selection_start: localSelectionRef.current.start,
-        selection_end: localSelectionRef.current.end,
+        selection_mode: activeMode,
+        selection_start:
+          activeMode === "rich" ? nextRichSelection.start : nextSourceSelection.start,
+        selection_end: activeMode === "rich" ? nextRichSelection.end : nextSourceSelection.end,
+        selection_text: activeMode === "rich" ? nextRichSelection.text : sourceSelectionText,
       })
     );
   };
@@ -234,6 +337,46 @@ function EditorPage() {
         operation: nextPending.operation,
       })
     );
+  };
+
+  const rebasePendingOperations = (serverContent, operationHistory, previousClientId) => {
+    let nextContent = serverContent;
+    const rebasedPending = [];
+
+    for (const pendingOperation of pendingOpsRef.current) {
+      let rebasedOperation = normalizeOperation(pendingOperation.operation);
+
+      for (const historicalEntry of operationHistory || []) {
+        if (historicalEntry.version <= pendingOperation.baseVersion) {
+          continue;
+        }
+
+        const pendingClientId =
+          pendingOperation.originClientId || previousClientId || localClientIdRef.current || "";
+        const side =
+          String(pendingClientId) < String(historicalEntry.client_id || "") ? "left" : "right";
+        rebasedOperation = transformOperation(
+          rebasedOperation,
+          historicalEntry.operation || [],
+          side
+        );
+      }
+
+      rebasedOperation = normalizeOperation(rebasedOperation);
+      if (!operationHasChanges(rebasedOperation)) {
+        continue;
+      }
+
+      nextContent = applyTextOperation(nextContent, rebasedOperation);
+      rebasedPending.push({
+        ...pendingOperation,
+        operation: rebasedOperation,
+        sent: false,
+      });
+    }
+
+    pendingOpsRef.current = rebasedPending;
+    return nextContent;
   };
 
   const connectRealtime = async () => {
@@ -276,20 +419,52 @@ function EditorPage() {
       const message = JSON.parse(event.data);
 
       if (message.type === "init") {
+        const previousClientId = localClientIdRef.current;
         localClientIdRef.current = message.client_id;
         setLocalClientId(message.client_id);
-        pendingOpsRef.current = [];
         const document = message.document || {};
-        const nextContent = document.content || "";
+        const serverTitle = document.title || "Untitled Document";
+        const serverContent = document.content || "";
+        let nextContent = serverContent;
+
+        if (pendingOpsRef.current.length) {
+          nextContent = rebasePendingOperations(
+            serverContent,
+            message.operation_history || [],
+            previousClientId
+          );
+        }
+
         currentContentRef.current = nextContent;
         serverVersionRef.current = document.version || 1;
         setContent(nextContent);
-        setTitle(document.title || "Untitled Document");
+        if (title === lastSavedSnapshotRef.current.title) {
+          setTitle(serverTitle);
+        }
         setDocumentVersion(document.version || 1);
         setUpdatedAt(document.updated_at || "");
         setCurrentRole(document.role || "viewer");
         setRemoteParticipants(decorateParticipants(message.participants || []));
-        setStatus(document.role === "viewer" ? "Connected in view mode" : "Connected");
+        lastSavedSnapshotRef.current = {
+          title: serverTitle,
+          content: serverContent,
+        };
+
+        const nextSelection = {
+          start: Math.min(localSelectionRef.current.start, nextContent.length),
+          end: Math.min(localSelectionRef.current.end, nextContent.length),
+        };
+        localSelectionRef.current = nextSelection;
+        setSelection(nextSelection);
+        richSelectionRef.current = { start: 1, end: 1, text: "" };
+        setRichSelection({ start: 1, end: 1, text: "" });
+
+        if (pendingOpsRef.current.length) {
+          setStatus("Reconnected. Syncing offline edits...");
+          sendNextPendingOperation();
+        } else {
+          setStatus(document.role === "viewer" ? "Connected in view mode" : "Connected");
+        }
         return;
       }
 
@@ -358,7 +533,11 @@ function EditorPage() {
         return;
       }
       setConnectionState("disconnected");
-      setStatus("Live collaboration disconnected. Reconnecting...");
+      setStatus(
+        pendingOpsRef.current.length || snapshotDirtyRef.current
+          ? "Offline mode. Changes will sync when reconnected."
+          : "Live collaboration disconnected. Reconnecting..."
+      );
 
       reconnectTimerRef.current = window.setTimeout(() => {
         connectRealtime();
@@ -371,6 +550,7 @@ function EditorPage() {
     const timeoutId = window.setTimeout(() => {
       loadDocument();
       loadVersions();
+      loadAiHistory();
     }, 0);
 
     return () => {
@@ -378,6 +558,7 @@ function EditorPage() {
       window.clearTimeout(timeoutId);
       window.clearTimeout(reconnectTimerRef.current);
       window.clearTimeout(cursorTimerRef.current);
+      window.clearTimeout(autoSaveTimerRef.current);
       if (wsRef.current) {
         wsRef.current.close();
       }
@@ -398,6 +579,11 @@ function EditorPage() {
   }, [documentId, error]);
 
   useEffect(() => {
+    editorModeRef.current = editorMode;
+    queueCursorUpdate();
+  }, [editorMode]);
+
+  useEffect(() => {
     const timeoutId = window.setTimeout(() => {
       loadShareLinks();
     }, 0);
@@ -407,16 +593,30 @@ function EditorPage() {
     };
   }, [currentRole]);
 
-  const saveSnapshot = async (nextTitle, nextContent, successStatus = "Snapshot saved") => {
+  const saveSnapshot = async (
+    nextTitle,
+    nextContent,
+    {
+      successStatus = "Snapshot saved",
+      blockedStatus = "Reconnect before saving a snapshot",
+    } = {}
+  ) => {
     if (currentRole === "viewer") {
       setStatus("Viewers cannot save snapshots");
       return false;
     }
 
     if (connectionState !== "connected") {
-      setStatus("Reconnect before saving a snapshot");
+      setStatus(blockedStatus);
       return false;
     }
+
+    if (saveInFlightRef.current) {
+      return false;
+    }
+
+    saveInFlightRef.current = true;
+    window.clearTimeout(autoSaveTimerRef.current);
 
     const startedAt = Date.now();
     while (pendingOpsRef.current.length && Date.now() - startedAt < 4000) {
@@ -424,6 +624,7 @@ function EditorPage() {
     }
 
     if (pendingOpsRef.current.length) {
+      saveInFlightRef.current = false;
       setStatus("Live edits are still syncing. Try saving again in a moment.");
       return false;
     }
@@ -445,6 +646,11 @@ function EditorPage() {
       setDocumentVersion(response.data.version);
       setUpdatedAt(response.data.updated_at);
       serverVersionRef.current = response.data.version;
+      lastSavedSnapshotRef.current = {
+        title: nextTitle,
+        content: nextContent,
+      };
+      snapshotDirtyRef.current = false;
       await loadVersions();
       setStatus(successStatus);
       return true;
@@ -455,7 +661,25 @@ function EditorPage() {
         setStatus("Snapshot save failed");
       }
       return false;
+    } finally {
+      saveInFlightRef.current = false;
     }
+  };
+
+  const clearLastAiUndo = () => {
+    lastAiChangeRef.current = null;
+    setCanUndoAiChange(false);
+  };
+
+  const handleTitleChange = (event) => {
+    const nextTitle = event.target.value;
+    snapshotDirtyRef.current = true;
+    setTitle(nextTitle);
+    setStatus(
+      connectionState === "connected"
+        ? "Changes queued for auto-save..."
+        : "Offline mode. Title changes will sync when reconnected."
+    );
   };
 
   const handleSelectionChange = (nextSelection) => {
@@ -464,15 +688,37 @@ function EditorPage() {
     queueCursorUpdate();
   };
 
-  const handleContentChange = (nextContent, nextSelection) => {
+  const handleRichTextSelectionChange = (nextSelection) => {
+    const normalizedSelection = {
+      start: nextSelection?.start ?? 1,
+      end: nextSelection?.end ?? 1,
+      text: nextSelection?.text || "",
+    };
+
+    richSelectionRef.current = normalizedSelection;
+    setRichSelection(normalizedSelection);
+    queueCursorUpdate();
+  };
+
+  const handleContentChange = (nextContent, nextSelection, { source = "manual" } = {}) => {
     const previousContent = currentContentRef.current;
     currentContentRef.current = nextContent;
     setContent(nextContent);
     localSelectionRef.current = nextSelection;
     setSelection(nextSelection);
+    snapshotDirtyRef.current = true;
+
+    if (source !== "ai-apply" && source !== "ai-undo") {
+      clearLastAiUndo();
+    }
 
     const operation = diffToOperation(previousContent, nextContent);
     if (!operationHasChanges(operation)) {
+      setStatus(
+        connectionState === "connected"
+          ? "Changes queued for auto-save..."
+          : "Offline mode. Changes will sync when reconnected."
+      );
       queueCursorUpdate();
       return;
     }
@@ -482,9 +728,14 @@ function EditorPage() {
       operation,
       sent: false,
       baseVersion: serverVersionRef.current,
+      originClientId: localClientIdRef.current,
     });
 
-    setStatus("Syncing edits...");
+    setStatus(
+      connectionState === "connected"
+        ? "Syncing edits..."
+        : "Offline mode. Changes will sync when reconnected."
+    );
     sendNextPendingOperation();
     queueCursorUpdate();
   };
@@ -500,9 +751,12 @@ function EditorPage() {
   };
 
   const handleApplySuggestion = async ({ suggestion, sourceText }) => {
+    const previousContent = content;
+    const previousSelection = selection;
     let nextContent = suggestion;
 
     if (
+      editorMode === "source" &&
       selection.start !== selection.end &&
       sourceText === content.slice(selection.start, selection.end)
     ) {
@@ -524,10 +778,48 @@ function EditorPage() {
       end: nextContent.length,
     };
 
-    handleContentChange(nextContent, nextSelection);
-    const saved = await saveSnapshot(title, nextContent, "AI changes applied and saved");
+    lastAiChangeRef.current = {
+      previousContent,
+      previousSelection,
+      nextContent,
+      nextSelection,
+    };
+    setCanUndoAiChange(true);
+
+    handleContentChange(nextContent, nextSelection, { source: "ai-apply" });
+    const saved = await saveSnapshot(title, nextContent, {
+      successStatus: "AI changes applied and saved",
+      blockedStatus: "AI changes applied locally. Reconnect to save the snapshot.",
+    });
     if (!saved) {
       setStatus("AI changes applied locally");
+    }
+  };
+
+  const handleUndoAiChange = async () => {
+    const lastAiChange = lastAiChangeRef.current;
+    if (!lastAiChange) {
+      return;
+    }
+
+    if (currentContentRef.current !== lastAiChange.nextContent) {
+      clearLastAiUndo();
+      setStatus("Undo unavailable because the draft changed after the AI apply.");
+      return;
+    }
+
+    handleContentChange(lastAiChange.previousContent, lastAiChange.previousSelection, {
+      source: "ai-undo",
+    });
+    clearLastAiUndo();
+
+    const saved = await saveSnapshot(title, lastAiChange.previousContent, {
+      successStatus: "AI change undone and saved",
+      blockedStatus: "AI change undone locally. Reconnect to save the snapshot.",
+    });
+
+    if (!saved) {
+      setStatus("AI change undone locally");
     }
   };
 
@@ -547,6 +839,8 @@ function EditorPage() {
       );
 
       pendingOpsRef.current = [];
+      snapshotDirtyRef.current = false;
+      clearLastAiUndo();
       await loadDocument();
       await loadVersions();
       setStatus("Version restored");
@@ -556,10 +850,16 @@ function EditorPage() {
   };
 
   const handleShare = () => {
-    const trimmedEmail = shareEmail.trim();
-    if (!trimmedEmail) {
+    const trimmedTarget = shareEmail.trim();
+    if (!trimmedTarget) {
       setShareMessage("");
       setShareError("Enter an email address first.");
+      return;
+    }
+
+    if (!trimmedTarget.includes("@")) {
+      setShareMessage("");
+      setShareError("Enter an email address to open an email draft.");
       return;
     }
 
@@ -580,15 +880,15 @@ function EditorPage() {
       ].join("\n")
     );
 
-    window.location.href = `mailto:${encodeURIComponent(trimmedEmail)}?subject=${subject}&body=${body}`;
+    window.location.href = `mailto:${encodeURIComponent(trimmedTarget)}?subject=${subject}&body=${body}`;
     setShareMessage("Email draft opened.");
   };
 
   const handleGrantAccess = async () => {
-    const trimmedEmail = shareEmail.trim();
-    if (!trimmedEmail) {
+    const trimmedTarget = shareEmail.trim();
+    if (!trimmedTarget) {
       setShareMessage("");
-      setShareError("Enter an email address first.");
+      setShareError("Enter an email address or username first.");
       return;
     }
 
@@ -598,10 +898,15 @@ function EditorPage() {
     try {
       const response = await api.post(
         `/api/v1/documents/${documentId}/share`,
-        {
-          user_email: trimmedEmail,
-          role: shareRole,
-        },
+        trimmedTarget.includes("@")
+          ? {
+              user_email: trimmedTarget,
+              role: shareRole,
+            }
+          : {
+              username: trimmedTarget,
+              role: shareRole,
+            },
         {
           headers: authHeader(),
         }
@@ -659,6 +964,39 @@ function EditorPage() {
       setShareMessage(url);
     }
   };
+
+  useEffect(() => {
+    window.clearTimeout(autoSaveTimerRef.current);
+
+    if (!hasLoadedDocumentRef.current || currentRole === "viewer") {
+      return undefined;
+    }
+
+    if (!snapshotDirtyRef.current) {
+      return undefined;
+    }
+
+    if (connectionState !== "connected") {
+      setStatus("Offline mode. Changes will sync when reconnected.");
+      return undefined;
+    }
+
+    if (pendingOpsRef.current.length || saveInFlightRef.current) {
+      return undefined;
+    }
+
+    setStatus("Changes queued for auto-save...");
+    autoSaveTimerRef.current = window.setTimeout(() => {
+      saveSnapshot(title, currentContentRef.current, {
+        successStatus: "All changes auto-saved",
+        blockedStatus: "Offline mode. Changes will sync when reconnected.",
+      });
+    }, 1200);
+
+    return () => {
+      window.clearTimeout(autoSaveTimerRef.current);
+    };
+  }, [connectionState, currentRole, title, content, documentVersion]);
 
   return (
     <div className="workspace-page">
@@ -740,7 +1078,7 @@ function EditorPage() {
               className="input title-input"
               value={title}
               disabled={currentRole === "viewer"}
-              onChange={(event) => setTitle(event.target.value)}
+              onChange={handleTitleChange}
             />
           </div>
 
@@ -777,7 +1115,11 @@ function EditorPage() {
                 <RichTextEditor
                   value={richTextValue}
                   onChange={handleRichTextChange}
+                  onSelectionChange={handleRichTextSelectionChange}
                   readOnly={readOnly}
+                  remoteParticipants={remoteParticipants.filter(
+                    (participant) => participant.client_id !== localClientId
+                  )}
                 />
                 <p className="muted-text compact-text rich-editor-note">
                   Use headings, bold, italic, lists, and code blocks here. Switch to source
@@ -813,9 +1155,10 @@ function EditorPage() {
                   <span>
                     {participant.client_id === localClientId
                       ? "You"
-                      : participant.name || participant.email || "Collaborator"}
+                      : participant.name || participant.username || participant.email || "Collaborator"}
                   </span>
                   <span className="presence-role">{participant.role}</span>
+                  <span className="presence-role">{formatParticipantActivity(participant)}</span>
                 </div>
               ))}
             </div>
@@ -824,9 +1167,12 @@ function EditorPage() {
           <AIEditPanel
             documentId={documentId}
             documentText={content}
-            selectedText={content.slice(selection.start, selection.end)}
+            selectedText={activeSelectedText}
             readOnly={currentRole === "viewer"}
+            canUndoLastApply={canUndoAiChange}
+            onHistoryChanged={loadAiHistory}
             onApplySuggestion={handleApplySuggestion}
+            onUndoLastApply={handleUndoAiChange}
           />
         </div>
 
@@ -844,8 +1190,13 @@ function EditorPage() {
                 collaborators.map((collaborator) => (
                   <div key={collaborator.user_id} className="stack-item">
                     <div>
-                      <strong>{collaborator.name || collaborator.email || collaborator.user_id}</strong>
-                      <p className="muted-text compact-text">{collaborator.email || collaborator.user_id}</p>
+                      <strong>
+                        {collaborator.name || collaborator.username || collaborator.email || collaborator.user_id}
+                      </strong>
+                      {collaborator.username ? (
+                        <div className="username-pill compact-pill">@{collaborator.username}</div>
+                      ) : null}
+                      <p className="muted-text compact-text">{formatCollaboratorMeta(collaborator)}</p>
                     </div>
                     <span className="badge role">{collaborator.role}</span>
                   </div>
@@ -861,8 +1212,12 @@ function EditorPage() {
               <div>
                 <h3>Sharing</h3>
                 <p className="muted-text">
-                  Email sharing stays available, and owners can also create revocable share links.
+                  Grant access by email or username, and create revocable share links when you need
+                  a broader handoff.
                 </p>
+                {currentUser?.username ? (
+                  <div className="username-banner">Your username is @{currentUser.username}</div>
+                ) : null}
               </div>
             </div>
 
@@ -872,11 +1227,11 @@ function EditorPage() {
                   <div className="stack-item stack-item-form">
                     <label className="field-label">Share with a collaborator</label>
                     <input
-                      type="email"
+                      type="text"
                       className="input"
                       value={shareEmail}
                       onChange={(event) => setShareEmail(event.target.value)}
-                      placeholder="name@example.com"
+                      placeholder="name@example.com or username"
                     />
                     <select
                       className="input"
@@ -1004,6 +1359,45 @@ function EditorPage() {
                 ))
               ) : (
                 <p className="muted-text">No saved snapshots yet.</p>
+              )}
+            </div>
+          </div>
+
+          <div className="panel-card">
+            <div className="panel-header">
+              <div>
+                <h3>AI history</h3>
+                <p className="muted-text">
+                  Every AI suggestion is logged with its prompt, output, and review status.
+                </p>
+              </div>
+            </div>
+
+            {aiHistoryError ? <div className="message error">{aiHistoryError}</div> : null}
+
+            <div className="stack-list">
+              {aiHistory.length ? (
+                aiHistory.map((interaction) => (
+                  <div key={interaction.interaction_id} className="stack-item">
+                    <div>
+                      <strong>
+                        {interaction.action} · {formatInteractionStatus(interaction.status)}
+                      </strong>
+                      <p className="muted-text compact-text">
+                        {formatDateTime(interaction.created_at)} · model {interaction.model}
+                      </p>
+                      <p className="muted-text compact-text">
+                        Source: {previewText(interaction.selected_text)}
+                      </p>
+                      <p className="muted-text compact-text">
+                        Response: {previewText(interaction.reviewed_text || interaction.response_text)}
+                      </p>
+                    </div>
+                    <span className="badge role">{formatInteractionStatus(interaction.status)}</span>
+                  </div>
+                ))
+              ) : (
+                <p className="muted-text">No AI interactions for this document yet.</p>
               )}
             </div>
           </div>
