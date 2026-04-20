@@ -32,7 +32,7 @@ vi.mock("../../../src/pages/ShareLinkPage", () => ({
 
 import App from "../../../src/App";
 
-function renderAt(path, { token = "" } = {}) {
+function renderAt(path, { token = "", refreshToken = "" } = {}) {
   window.history.replaceState({}, "", path);
   window.location.pathname = path;
   window.location.href = `http://localhost${path}`;
@@ -40,6 +40,10 @@ function renderAt(path, { token = "" } = {}) {
 
   if (token) {
     localStorage.setItem("access_token", token);
+  }
+
+  if (refreshToken) {
+    localStorage.setItem("refresh_token", refreshToken);
   }
 
   return render(<App />);
@@ -74,6 +78,16 @@ test("renders the share-link page for public share routes", () => {
  */
 test("renders the dashboard page on authenticated dashboard routes", () => {
   renderAt("/dashboard", { token: "token-123" });
+
+  expect(screen.getByText("Mock Dashboard Page")).toBeInTheDocument();
+});
+
+/**
+ * Verifies a stored refresh token still counts as an active session for route
+ * gating so the app can silently refresh expired access tokens after reload.
+ */
+test("renders protected routes when only a refresh token is stored", () => {
+  renderAt("/dashboard", { refreshToken: "refresh-123" });
 
   expect(screen.getByText("Mock Dashboard Page")).toBeInTheDocument();
 });

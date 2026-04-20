@@ -4,10 +4,12 @@ import RegisterPage from "./pages/RegisterPage";
 import DashboardPage from "./pages/DashboardPage";
 import EditorPage from "./pages/EditorPage";
 import ShareLinkPage from "./pages/ShareLinkPage";
+import { getStoredRefreshToken } from "./lib/session";
 
 function App() {
   const path = window.location.pathname;
   const token = localStorage.getItem("access_token");
+  const refreshToken = getStoredRefreshToken();
 
   if (path === "/login" || path === "/") {
     return <LoginPage />;
@@ -21,7 +23,7 @@ function App() {
     return <ShareLinkPage />;
   }
 
-  if (!token) {
+  if (!token && !refreshToken) {
     window.history.replaceState({}, "", "/login");
     return <LoginPage />;
   }

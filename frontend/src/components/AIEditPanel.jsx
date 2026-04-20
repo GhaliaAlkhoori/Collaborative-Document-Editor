@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import api from "../api/client";
+import { useEffect, useRef, useState } from "react";
+import api, { fetchWithAuth } from "../api/client";
 import {
   buildSuggestionBlocks,
   composeSuggestionText,
@@ -18,12 +18,16 @@ function toggleAllBlocks(blocks, accepted) {
 }
 
 function AIEditPanel({
-  authToken,
+  documentId,
   documentText,
   selectedText,
   readOnly = false,
+  canUndoLastApply = false,
   onApplySuggestion,
+  onHistoryChanged,
+  onUndoLastApply,
 }) {
+  const abortControllerRef = useRef(null);
   const [inputText, setInputText] = useState(selectedText || documentText || "");
   const [action, setAction] = useState("rewrite");
   const [tone, setTone] = useState("formal");
@@ -32,6 +36,9 @@ function AIEditPanel({
   const [reviewBlocks, setReviewBlocks] = useState([]);
   const [loading, setLoading] = useState(false);
   const [streamingText, setStreamingText] = useState("");
+  const [editableSuggestion, setEditableSuggestion] = useState("");
+  const [suggestionWasEdited, setSuggestionWasEdited] = useState(false);
+  const [currentInteractionId, setCurrentInteractionId] = useState("");
   const [error, setError] = useState("");
 
   const selectedWordCount = selectedText?.trim()
@@ -43,10 +50,54 @@ function AIEditPanel({
   const inputWordCount = inputText?.trim() ? inputText.trim().split(/\s+/).length : 0;
   const usingSelection = Boolean(selectedText?.trim()) && inputText === selectedText;
   const usingFullDocument = Boolean(documentText?.trim()) && inputText === documentText;
+  const reviewedSuggestion = composeSuggestionText(reviewBlocks) || suggestion;
+  const finalSuggestion = suggestionWasEdited ? editableSuggestion : reviewedSuggestion;
   const previewText = loading
     ? streamingText || "Streaming response..."
-    : composeSuggestionText(reviewBlocks) || suggestion || "No suggestion yet.";
+    : finalSuggestion || "No suggestion yet.";
   const changeCount = countReviewChanges(reviewBlocks);
+
+  const clearSuggestionState = () => {
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    setSuggestion("");
+    setReviewBlocks([]);
+    setStreamingText("");
+    setEditableSuggestion("");
+    setSuggestionWasEdited(false);
+    setCurrentInteractionId("");
+    setError("");
+    setLoading(false);
+  };
+
+  const syncHistory = async () => {
+    try {
+      await onHistoryChanged?.();
+    } catch {
+      // Keep the editor usable even if the history refresh fails.
+    }
+  };
+
+  const updateInteractionStatus = async (status, reviewedText) => {
+    if (!currentInteractionId || !documentId) {
+      return;
+    }
+
+    await api.patch(`/api/v1/ai/history/${currentInteractionId}`, {
+      document_id: documentId,
+      status,
+      reviewed_text: reviewedText ?? null,
+    });
+    await syncHistory();
+  };
+
+  const tryUpdateInteractionStatus = async (status, reviewedText) => {
+    try {
+      await updateInteractionStatus(status, reviewedText);
+    } catch {
+      setError("The draft was updated, but the AI history could not be synced.");
+    }
+  };
 
   useEffect(() => {
     if (!selectedText?.trim()) {
@@ -55,8 +106,7 @@ function AIEditPanel({
 
     const timeoutId = window.setTimeout(() => {
       setInputText(selectedText);
-      setSuggestion("");
-      setReviewBlocks([]);
+      clearSuggestionState();
     }, 0);
 
     return () => {
@@ -64,26 +114,57 @@ function AIEditPanel({
     };
   }, [selectedText]);
 
+  useEffect(() => {
+    if (suggestionWasEdited) {
+      return;
+    }
+
+    setEditableSuggestion(reviewedSuggestion);
+  }, [reviewBlocks, reviewedSuggestion, suggestionWasEdited]);
+
+  useEffect(() => {
+    return () => {
+      abortControllerRef.current?.abort();
+    };
+  }, []);
+
   const handleGenerate = async () => {
     if (!inputText.trim()) {
       setError("Please enter or paste selected text first.");
       return;
     }
 
+    if (!documentId) {
+      setError("AI suggestions require a saved document.");
+      return;
+    }
+
+    if (readOnly) {
+      setError("Viewers cannot generate AI suggestions.");
+      return;
+    }
+
+    abortControllerRef.current?.abort();
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     setLoading(true);
     setError("");
     setSuggestion("");
     setReviewBlocks([]);
     setStreamingText("");
+    setEditableSuggestion("");
+    setSuggestionWasEdited(false);
+    let nextSuggestion = "";
 
     try {
-      const response = await fetch(`${api.defaults.baseURL}/api/v1/ai/generate`, {
+      const response = await fetchWithAuth(`${api.defaults.baseURL}/api/v1/ai/generate`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${authToken}`,
         },
         body: JSON.stringify({
+          document_id: documentId,
           selected_text: inputText,
           action,
           options: {
@@ -91,7 +172,9 @@ function AIEditPanel({
             target_language: action === "translate" ? targetLanguage : null,
           },
         }),
+        signal: controller.signal,
       });
+      setCurrentInteractionId(response.headers?.get?.("x-ai-interaction-id") || "");
 
       if (!response.ok || !response.body) {
         let message = "AI request failed.";
@@ -109,7 +192,6 @@ function AIEditPanel({
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
-      let nextSuggestion = "";
 
       while (true) {
         const { done, value } = await reader.read();
@@ -122,16 +204,38 @@ function AIEditPanel({
         setStreamingText(nextSuggestion);
       }
 
+      nextSuggestion += decoder.decode();
       setSuggestion(nextSuggestion);
       setReviewBlocks(buildSuggestionBlocks(inputText, nextSuggestion));
-      setLoading(false);
+      await syncHistory();
     } catch (err) {
+      const requestWasCancelled =
+        err?.name === "AbortError" ||
+        err?.code === 20 ||
+        abortControllerRef.current?.signal?.aborted;
+
+      if (requestWasCancelled) {
+        if (nextSuggestion.trim()) {
+          setSuggestion(nextSuggestion);
+          setReviewBlocks(buildSuggestionBlocks(inputText, nextSuggestion));
+          setError("Generation cancelled. Partial output kept for review.");
+        } else {
+          setError("Generation cancelled.");
+        }
+      } else {
+        if (nextSuggestion.trim()) {
+          setSuggestion(nextSuggestion);
+          setReviewBlocks(buildSuggestionBlocks(inputText, nextSuggestion));
+          setError("Generation stopped early. Partial output kept for review.");
+        } else {
+          setError(err?.message || "AI request failed. Check backend integration.");
+        }
+      }
+    } finally {
+      abortControllerRef.current = null;
       setLoading(false);
-      setError(err?.message || "AI request failed. Check backend integration.");
     }
   };
-
-  const finalSuggestion = composeSuggestionText(reviewBlocks) || suggestion;
 
   return (
     <div className="panel-card ai-panel">
@@ -173,8 +277,7 @@ function AIEditPanel({
             disabled={!selectedText?.trim()}
             onClick={() => {
               setInputText(selectedText);
-              setSuggestion("");
-              setReviewBlocks([]);
+              clearSuggestionState();
             }}
           >
             Use selection
@@ -185,8 +288,7 @@ function AIEditPanel({
             disabled={!documentText?.trim()}
             onClick={() => {
               setInputText(documentText);
-              setSuggestion("");
-              setReviewBlocks([]);
+              clearSuggestionState();
             }}
           >
             Use full document
@@ -200,8 +302,7 @@ function AIEditPanel({
           value={inputText}
           onChange={(event) => {
             setInputText(event.target.value);
-            setSuggestion("");
-            setReviewBlocks([]);
+            clearSuggestionState();
           }}
         />
 
@@ -265,10 +366,20 @@ function AIEditPanel({
       <button
         className="primary-button full-width ai-generate-button"
         onClick={handleGenerate}
-        disabled={loading}
+        disabled={loading || readOnly}
       >
         {loading ? "Generating..." : "Generate Suggestion"}
       </button>
+
+      {loading ? (
+        <button
+          type="button"
+          className="ghost-button full-width"
+          onClick={() => abortControllerRef.current?.abort()}
+        >
+          Cancel generation
+        </button>
+      ) : null}
 
       {error ? <div className="message error">{error}</div> : null}
 
@@ -289,6 +400,50 @@ function AIEditPanel({
           {previewText}
         </div>
       </div>
+
+      {suggestion || streamingText ? (
+        <div className="ai-source-card">
+          <div className="ai-source-header">
+            <div>
+              <label className="field-label">Editable reviewed output</label>
+              <p className="ai-helper-text">
+                You can fine-tune the reviewed suggestion before applying it to the draft.
+              </p>
+            </div>
+            <div className="ai-source-meta">{finalSuggestion?.trim() ? "Editable" : "Waiting"}</div>
+          </div>
+
+          <textarea
+            className="textarea ai-source-textarea"
+            rows={7}
+            value={finalSuggestion}
+            disabled={loading}
+            onChange={(event) => {
+              setEditableSuggestion(event.target.value);
+              setSuggestionWasEdited(true);
+            }}
+          />
+
+          <div className="ai-source-footer">
+            <span>
+              {suggestionWasEdited
+                ? "You are applying a manually edited version."
+                : "Review block choices stay in sync here until you edit manually."}
+            </span>
+            <button
+              type="button"
+              className="ghost-button small-button"
+              disabled={!suggestionWasEdited}
+              onClick={() => {
+                setEditableSuggestion(reviewedSuggestion);
+                setSuggestionWasEdited(false);
+              }}
+            >
+              Reset to reviewed output
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {changeCount ? (
         <div className="ai-review-card">
@@ -390,28 +545,42 @@ function AIEditPanel({
       <div className="inline-actions ai-apply-actions">
         <button
           className="secondary-button"
-          disabled={!suggestion || readOnly}
-          onClick={() =>
-            onApplySuggestion({
-              suggestion: finalSuggestion,
-              sourceText: inputText,
-            })
-          }
+          disabled={!finalSuggestion?.trim() || readOnly}
+          onClick={async () => {
+            await tryUpdateInteractionStatus("accepted", finalSuggestion);
+            await Promise.resolve(
+              onApplySuggestion({
+                suggestion: finalSuggestion,
+                sourceText: inputText,
+              })
+            );
+            clearSuggestionState();
+          }}
         >
           {readOnly ? "View only" : "Apply reviewed version"}
         </button>
         <button
           className="ghost-button"
           disabled={!suggestion && !streamingText}
-          onClick={() => {
-            setSuggestion("");
-            setReviewBlocks([]);
-            setStreamingText("");
-            setError("");
+          onClick={async () => {
+            await tryUpdateInteractionStatus(
+              "rejected",
+              finalSuggestion || streamingText || suggestion
+            );
+            clearSuggestionState();
           }}
         >
           Clear
         </button>
+        {canUndoLastApply ? (
+          <button
+            type="button"
+            className="ghost-button"
+            onClick={() => onUndoLastApply?.()}
+          >
+            Undo last AI apply
+          </button>
+        ) : null}
       </div>
     </div>
   );

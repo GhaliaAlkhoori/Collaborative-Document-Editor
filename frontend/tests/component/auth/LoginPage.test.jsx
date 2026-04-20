@@ -38,8 +38,10 @@ test("stores the access token and user payload after a successful login", async 
   apiMock.post.mockResolvedValueOnce({
     data: {
       access_token: "token-123",
+      refresh_token: "refresh-123",
       user_id: "user-123",
       name: "Alice Writer",
+      username: "alice-writer",
     },
   });
 
@@ -57,9 +59,11 @@ test("stores the access token and user payload after a successful login", async 
   });
 
   expect(localStorage.getItem("access_token")).toBe("token-123");
+  expect(localStorage.getItem("refresh_token")).toBe("refresh-123");
   expect(JSON.parse(localStorage.getItem("user"))).toEqual({
     user_id: "user-123",
     name: "Alice Writer",
+    username: "alice-writer",
     email: "alice@example.com",
   });
   expect(window.location.href).toBe("/dashboard");
@@ -99,8 +103,10 @@ test("redirects to the pending share link after login", async () => {
   apiMock.post.mockResolvedValueOnce({
     data: {
       access_token: "token-456",
+      refresh_token: "refresh-456",
       user_id: "user-456",
       name: "Bob Reviewer",
+      username: "bob-reviewer",
     },
   });
 
@@ -114,5 +120,6 @@ test("redirects to the pending share link after login", async () => {
     expect(localStorage.getItem("access_token")).toBe("token-456");
   });
 
+  expect(localStorage.getItem("refresh_token")).toBe("refresh-456");
   expect(window.location.href).toBe("/share/share-token-9");
 });

@@ -25,8 +25,13 @@ function RegisterPage() {
     setMessage("");
 
     try {
-      await api.post("/api/v1/auth/register", form);
-      setMessage("Account created successfully. Redirecting to login...");
+      const response = await api.post("/api/v1/auth/register", form);
+      const assignedUsername = response?.data?.username;
+      setMessage(
+        assignedUsername
+          ? `Account created successfully as @${assignedUsername}. Redirecting to login...`
+          : "Account created successfully. Redirecting to login..."
+      );
       setTimeout(() => {
         window.location.href = "/login";
       }, 1200);

@@ -15,12 +15,15 @@ def reset_in_memory_state() -> Generator[None, None, None]:
     """Reset every in-memory store so backend tests stay isolated from one another."""
     storage.USERS_BY_ID.clear()
     storage.USERS_BY_EMAIL.clear()
+    storage.USERS_BY_USERNAME.clear()
     storage.DOCUMENTS_BY_ID.clear()
     storage.DOCUMENT_PERMISSIONS.clear()
     storage.DOCUMENT_VERSIONS.clear()
     storage.DOCUMENT_OPERATION_HISTORY.clear()
     storage.AI_LOGS.clear()
     storage.SHARE_LINKS_BY_TOKEN.clear()
+    storage.REFRESH_TOKENS_BY_TOKEN.clear()
+    storage.INVITATIONS_BY_ID.clear()
     app.dependency_overrides.clear()
 
     previous_mock_mode = routes_ai.AI_MOCK_MODE
@@ -77,6 +80,8 @@ def register_and_login(client: TestClient) -> Callable[..., dict]:
             "email": email_value,
             "password": password,
             "token": token,
+            "refresh_token": payload["refresh_token"],
+            "username": payload["username"],
             "headers": {
                 "Authorization": f"Bearer {token}",
             },

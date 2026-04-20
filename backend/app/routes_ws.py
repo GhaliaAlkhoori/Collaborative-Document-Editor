@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Dict
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
@@ -24,10 +25,42 @@ from app.text_ops import (
 router = APIRouter(tags=["Realtime Collaboration"])
 
 ACTIVE_DOCUMENT_SESSIONS: Dict[str, Dict[str, dict]] = {}
+TYPING_WINDOW_SECONDS = 4
+ACTIVE_WINDOW_SECONDS = 30
 
 
 def get_document_role(document_id: str, user_id: str) -> str | None:
     return DOCUMENT_PERMISSIONS.get(document_id, {}).get(user_id)
+
+
+def parse_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def derive_activity_status(session: dict) -> tuple[bool, str]:
+    current_time = datetime.now(timezone.utc)
+    typing_until = parse_timestamp(session.get("typing_until"))
+    if typing_until and typing_until > current_time:
+        return True, "typing"
+
+    last_activity_at = parse_timestamp(session.get("last_activity_at"))
+    if last_activity_at and current_time - last_activity_at <= timedelta(seconds=ACTIVE_WINDOW_SECONDS):
+        return False, "active"
+
+    return False, "idle"
+
+
+def mark_session_activity(session: dict, *, typing: bool = False) -> None:
+    current_time = datetime.now(timezone.utc)
+    session["last_activity_at"] = current_time.isoformat()
+    if typing:
+        session["typing_until"] = (current_time + timedelta(seconds=TYPING_WINDOW_SECONDS)).isoformat()
 
 
 def build_participants_payload(document_id: str) -> list[dict]:
@@ -35,15 +68,22 @@ def build_participants_payload(document_id: str) -> list[dict]:
 
     for session in ACTIVE_DOCUMENT_SESSIONS.get(document_id, {}).values():
         user = USERS_BY_ID.get(session["user_id"], {})
+        is_typing, activity_status = derive_activity_status(session)
         participants.append(
             {
                 "client_id": session["client_id"],
                 "user_id": session["user_id"],
                 "name": user.get("name", "Collaborator"),
+                "username": user.get("username", ""),
                 "email": user.get("email", ""),
                 "role": session["role"],
                 "selection_start": session["selection_start"],
                 "selection_end": session["selection_end"],
+                "selection_mode": session.get("selection_mode", "source"),
+                "selection_text": session.get("selection_text", ""),
+                "last_activity_at": session.get("last_activity_at"),
+                "is_typing": is_typing,
+                "activity_status": activity_status,
             }
         )
 
@@ -88,6 +128,14 @@ def clamp_selection(content: str, start: int, end: int) -> tuple[int, int]:
     return end, start
 
 
+def clamp_rich_selection(start: int, end: int) -> tuple[int, int]:
+    safe_start = max(1, int(start))
+    safe_end = max(1, int(end))
+    if safe_start <= safe_end:
+        return safe_start, safe_end
+    return safe_end, safe_start
+
+
 @router.websocket("/api/v1/ws/documents/{document_id}")
 async def collaborate(document_id: str, websocket: WebSocket):
     token = websocket.query_params.get("token", "")
@@ -121,6 +169,10 @@ async def collaborate(document_id: str, websocket: WebSocket):
         "websocket": websocket,
         "selection_start": 0,
         "selection_end": 0,
+        "selection_mode": "source",
+        "selection_text": "",
+        "last_activity_at": now_iso(),
+        "typing_until": None,
     }
 
     ACTIVE_DOCUMENT_SESSIONS.setdefault(document_id, {})[client_id] = session
@@ -139,6 +191,7 @@ async def collaborate(document_id: str, websocket: WebSocket):
                 "updated_at": document["updated_at"],
                 "role": role,
             },
+            "operation_history": DOCUMENT_OPERATION_HISTORY.get(document_id, []),
             "participants": build_participants_payload(document_id),
         },
     )
@@ -150,17 +203,28 @@ async def collaborate(document_id: str, websocket: WebSocket):
             message_type = str(message.get("type", "")).strip()
 
             if message_type == "ping":
+                mark_session_activity(session)
                 await send_json_safe(websocket, {"type": "pong"})
                 continue
 
             if message_type == "cursor":
-                selection_start, selection_end = clamp_selection(
-                    document["content"],
-                    message.get("selection_start", 0),
-                    message.get("selection_end", 0),
-                )
+                selection_mode = str(message.get("selection_mode", "source") or "source")
+                if selection_mode == "rich":
+                    selection_start, selection_end = clamp_rich_selection(
+                        message.get("selection_start", 1),
+                        message.get("selection_end", 1),
+                    )
+                else:
+                    selection_start, selection_end = clamp_selection(
+                        document["content"],
+                        message.get("selection_start", 0),
+                        message.get("selection_end", 0),
+                    )
                 session["selection_start"] = selection_start
                 session["selection_end"] = selection_end
+                session["selection_mode"] = selection_mode
+                session["selection_text"] = str(message.get("selection_text", "") or "")
+                mark_session_activity(session)
                 await broadcast_snapshot(document_id, "cursor_snapshot")
                 continue
 
@@ -175,6 +239,8 @@ async def collaborate(document_id: str, websocket: WebSocket):
             operation = normalize_operation(message.get("operation"))
             if not operation_has_changes(operation):
                 continue
+
+            mark_session_activity(session, typing=True)
 
             try:
                 base_version = int(message.get("base_version", document["version"]))

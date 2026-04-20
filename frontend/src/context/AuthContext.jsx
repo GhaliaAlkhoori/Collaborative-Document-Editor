@@ -1,39 +1,49 @@
 
 /* eslint-disable react-refresh/only-export-components */
-import { createContext, useContext, useState } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
+import {
+  clearStoredSession,
+  getStoredSession,
+  persistSession,
+  subscribeToSessionChanges,
+} from "../lib/session";
 
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
-  const [accessToken, setAccessToken] = useState(
-    localStorage.getItem("access_token") || ""
-  );
-  const [user, setUser] = useState(() => {
-    const saved = localStorage.getItem("user");
-    return saved ? JSON.parse(saved) : null;
-  });
+  const [session, setSession] = useState(() => getStoredSession());
 
-  const login = (token, userData) => {
-    setAccessToken(token);
-    setUser(userData);
-    localStorage.setItem("access_token", token);
-    localStorage.setItem("user", JSON.stringify(userData));
+  useEffect(() => {
+    const syncSession = () => {
+      setSession(getStoredSession());
+    };
+
+    syncSession();
+    return subscribeToSessionChanges(syncSession);
+  }, []);
+
+  const login = ({ accessToken, refreshToken }, userData) => {
+    persistSession({
+      accessToken,
+      refreshToken,
+      user: userData,
+    });
+    setSession(getStoredSession());
   };
 
   const logout = () => {
-    setAccessToken("");
-    setUser(null);
-    localStorage.removeItem("access_token");
-    localStorage.removeItem("user");
+    clearStoredSession();
+    setSession(getStoredSession());
     window.location.href = "/login";
   };
 
   return (
     <AuthContext.Provider
       value={{
-        accessToken,
-        user,
-        isAuthenticated: !!accessToken,
+        accessToken: session.accessToken,
+        refreshToken: session.refreshToken,
+        user: session.user,
+        isAuthenticated: !!(session.accessToken || session.refreshToken),
         login,
         logout,
       }}

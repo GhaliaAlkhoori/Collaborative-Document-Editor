@@ -5,7 +5,7 @@ import { vi } from "vitest";
 
 import ShareLinkPage from "../../../src/pages/ShareLinkPage";
 
-const { apiMock } = vi.hoisted(() => ({
+const { apiMock, ensureValidAccessTokenMock } = vi.hoisted(() => ({
   apiMock: {
     post: vi.fn(),
     get: vi.fn(),
@@ -15,15 +15,19 @@ const { apiMock } = vi.hoisted(() => ({
       baseURL: "http://127.0.0.1:8001",
     },
   },
+  ensureValidAccessTokenMock: vi.fn(),
 }));
 
 vi.mock("../../../src/api/client", () => ({
   default: apiMock,
+  ensureValidAccessToken: ensureValidAccessTokenMock,
 }));
 
 beforeEach(() => {
   apiMock.post.mockReset();
   apiMock.get.mockReset();
+  ensureValidAccessTokenMock.mockReset();
+  ensureValidAccessTokenMock.mockResolvedValue("");
   window.history.replaceState({}, "", "/share/share-token-123");
   window.location.pathname = "/share/share-token-123";
   window.location.href = "http://localhost/share/share-token-123";
@@ -61,6 +65,7 @@ test("shows share-link preview and sign-in actions for unauthenticated visitors"
 test("redeems a valid share link and redirects authenticated users", async () => {
   localStorage.setItem("access_token", "token-123");
   localStorage.setItem("pending_share_token", "share-token-123");
+  ensureValidAccessTokenMock.mockResolvedValueOnce("token-123");
   apiMock.get.mockResolvedValueOnce({
     data: {
       title: "Team Draft",

@@ -5,6 +5,7 @@ from app.auth import get_current_user
 from app.models import (
     CreateDocumentRequest,
     CreateDocumentResponse,
+    DeleteDocumentResponse,
     GetDocumentResponse,
     UpdateDocumentRequest,
     UpdateDocumentResponse,
@@ -27,8 +28,11 @@ from app.storage import (
     DOCUMENT_VERSIONS,
     USERS_BY_ID,
     USERS_BY_EMAIL,
+    USERS_BY_USERNAME,
+    create_invitation,
     create_document,
     create_share_link,
+    delete_document,
     grant_document_access,
     list_document_share_links,
     now_iso,
@@ -59,7 +63,7 @@ def require_document_access(document_id: str, user_id: str):
 def require_owner_access(document_id: str, user_id: str):
     doc, role = require_document_access(document_id, user_id)
     if role != "owner":
-        raise HTTPException(status_code=403, detail="Only owner can manage sharing")
+        raise HTTPException(status_code=403, detail="Only owner can manage this document")
     return doc
 
 
@@ -75,6 +79,16 @@ def serialize_share_link(share_link: dict) -> ShareLinkEntry:
     )
 
 
+def resolve_share_target(payload: ShareDocumentRequest) -> dict:
+    if payload.user_email:
+        return USERS_BY_EMAIL.get(payload.user_email.lower())
+
+    if payload.username:
+        return USERS_BY_USERNAME.get(payload.username.lower())
+
+    raise HTTPException(status_code=400, detail="Provide an email or username to share this document")
+
+
 @router.post("", response_model=CreateDocumentResponse)
 def create_document_route(payload: CreateDocumentRequest, current_user=Depends(get_current_user)):
     doc = create_document(current_user["user_id"], payload.title)
@@ -86,6 +100,17 @@ def create_document_route(payload: CreateDocumentRequest, current_user=Depends(g
         created_at=doc["created_at"],
         updated_at=doc["updated_at"],
         version=doc["version"],
+    )
+
+
+@router.delete("/{document_id}", response_model=DeleteDocumentResponse)
+def delete_document_route(document_id: str, current_user=Depends(get_current_user)):
+    _doc = require_owner_access(document_id, current_user["user_id"])
+    deleted = delete_document(document_id)
+
+    return DeleteDocumentResponse(
+        document_id=document_id,
+        deleted_at=now_iso(),
     )
 
 
@@ -119,6 +144,7 @@ def get_document(document_id: str, current_user=Depends(get_current_user)):
             user_id=user_id,
             role=permission_role,
             name=USERS_BY_ID.get(user_id, {}).get("name"),
+            username=USERS_BY_ID.get(user_id, {}).get("username"),
             email=USERS_BY_ID.get(user_id, {}).get("email"),
         )
         for user_id, permission_role in DOCUMENT_PERMISSIONS.get(document_id, {}).items()
@@ -179,15 +205,23 @@ def share_document(
 ):
     _doc = require_owner_access(document_id, current_user["user_id"])
 
-    target_user = USERS_BY_EMAIL.get(payload.user_email.lower())
+    target_user = resolve_share_target(payload)
     if not target_user:
         raise HTTPException(status_code=404, detail="User not found")
 
     granted_role = grant_document_access(document_id, target_user["user_id"], payload.role)
+    if target_user["user_id"] != current_user["user_id"]:
+        create_invitation(
+            document_id=document_id,
+            sender_user_id=current_user["user_id"],
+            recipient_user_id=target_user["user_id"],
+            role=granted_role,
+        )
 
     return ShareDocumentResponse(
         document_id=document_id,
         user_id=target_user["user_id"],
+        username=target_user.get("username"),
         role=granted_role,
         granted_at=now_iso(),
     )

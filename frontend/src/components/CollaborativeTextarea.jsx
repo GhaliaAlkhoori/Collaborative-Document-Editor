@@ -158,7 +158,8 @@ function CollaborativeTextarea({
 
   const positions = buildIndexMap(value, metrics.columns);
   const visibleParticipants = (remoteParticipants || []).filter(
-    (participant) => participant.client_id !== localClientId
+    (participant) =>
+      participant.client_id !== localClientId && (participant.selection_mode || "source") !== "rich"
   );
 
   return (
@@ -201,7 +202,7 @@ function CollaborativeTextarea({
             const safeStart = Math.max(0, Math.min(start, end));
             const safeEnd = Math.max(0, Math.max(start, end));
             const color = participant.color || "#0ea5e9";
-            const label = participant.name || "Collaborator";
+            const label = participant.name || participant.username || "Collaborator";
             const segments = buildSelectionRects(value, positions, safeStart, safeEnd);
             const anchor = getCaretPosition(positions, safeStart);
             const caret = getCaretPosition(positions, safeEnd);

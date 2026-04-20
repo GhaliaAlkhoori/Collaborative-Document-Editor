@@ -51,10 +51,48 @@ def test_authenticated_editor_receives_init_and_can_exchange_messages(client, re
         operation_payload = _receive_until_type(websocket, "operation_applied")
 
     assert init_payload["document"]["document_id"] == document_id
+    assert init_payload["operation_history"] == []
     assert len(presence_payload["participants"]) == 1
+    assert presence_payload["participants"][0]["activity_status"] == "active"
     assert pong_payload == {"type": "pong"}
     assert operation_payload["version"] == 2
+    assert operation_payload["participants"][0]["is_typing"] is True
+    assert operation_payload["participants"][0]["activity_status"] == "typing"
     assert DOCUMENTS_BY_ID[document_id]["content"] == "Hello realtime"
+
+
+def test_reconnecting_clients_receive_operation_history_in_init(client, register_and_login):
+    """Verify websocket reconnects include the document operation history so offline clients can rebase queued edits."""
+    owner = register_and_login(name="Owner", email="owner@example.com")
+    create_response = client.post(
+        "/api/v1/documents",
+        json={"title": "Reconnect Draft"},
+        headers=owner["headers"],
+    )
+    document_id = create_response.json()["document_id"]
+
+    with client.websocket_connect(
+        f"/api/v1/ws/documents/{document_id}?token={owner['token']}"
+    ) as websocket:
+        init_payload = _receive_until_type(websocket, "init")
+        _receive_until_type(websocket, "presence_snapshot")
+        websocket.send_json(
+            {
+                "type": "operation",
+                "client_op_id": "offline-op-seed",
+                "base_version": init_payload["document"]["version"],
+                "operation": [{"type": "insert", "text": "Seed edit"}],
+            }
+        )
+        _receive_until_type(websocket, "operation_applied")
+
+    with client.websocket_connect(
+        f"/api/v1/ws/documents/{document_id}?token={owner['token']}"
+    ) as reconnect_socket:
+        reconnect_payload = _receive_until_type(reconnect_socket, "init")
+
+    assert len(reconnect_payload["operation_history"]) == 1
+    assert reconnect_payload["operation_history"][0]["client_op_id"] == "offline-op-seed"
 
 
 def test_viewers_receive_an_error_when_they_try_to_edit_over_websocket(client, register_and_login):
