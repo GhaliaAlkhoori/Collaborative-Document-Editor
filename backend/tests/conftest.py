@@ -21,6 +21,7 @@ def reset_in_memory_state() -> Generator[None, None, None]:
     storage.DOCUMENT_OPERATION_HISTORY.clear()
     storage.AI_LOGS.clear()
     storage.SHARE_LINKS_BY_TOKEN.clear()
+    storage.REFRESH_TOKENS_BY_TOKEN.clear()
     app.dependency_overrides.clear()
 
     previous_mock_mode = routes_ai.AI_MOCK_MODE
@@ -77,6 +78,7 @@ def register_and_login(client: TestClient) -> Callable[..., dict]:
             "email": email_value,
             "password": password,
             "token": token,
+            "refresh_token": payload["refresh_token"],
             "headers": {
                 "Authorization": f"Bearer {token}",
             },

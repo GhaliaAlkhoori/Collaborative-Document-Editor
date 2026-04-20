@@ -5,8 +5,10 @@ from app.auth import (
     decode_access_token,
     get_bearer_token,
     hash_password,
+    REFRESH_TOKEN_EXPIRE_DAYS,
     verify_password,
 )
+from app.storage import create_refresh_token, get_active_refresh_token, revoke_refresh_token
 
 
 def test_hash_password_obscures_plaintext_and_verifies_correctly():
@@ -46,3 +48,14 @@ def test_get_bearer_token_rejects_non_bearer_headers():
         assert exc.detail == "Invalid Authorization header"
     else:
         raise AssertionError("Expected an HTTPException for an invalid Authorization header")
+
+
+def test_refresh_tokens_are_active_until_revoked():
+    """Verify refresh tokens stay valid until explicit revocation so silent re-auth can rotate sessions."""
+    refresh_token = create_refresh_token("user-123", REFRESH_TOKEN_EXPIRE_DAYS)
+
+    assert get_active_refresh_token(refresh_token["token"]) is not None
+
+    revoke_refresh_token(refresh_token["token"])
+
+    assert get_active_refresh_token(refresh_token["token"]) is None

@@ -28,11 +28,17 @@ function LoginPage() {
       const res = await api.post("/api/v1/auth/login", form);
       const pendingShareToken = localStorage.getItem("pending_share_token");
 
-      login(res.data.access_token, {
-        user_id: res.data.user_id,
-        name: res.data.name,
-        email: form.email,
-      });
+      login(
+        {
+          accessToken: res.data.access_token,
+          refreshToken: res.data.refresh_token,
+        },
+        {
+          user_id: res.data.user_id,
+          name: res.data.name,
+          email: form.email,
+        }
+      );
 
       window.location.href = pendingShareToken ? `/share/${pendingShareToken}` : "/dashboard";
     } catch (err) {

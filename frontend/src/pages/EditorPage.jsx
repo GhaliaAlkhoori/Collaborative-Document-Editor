@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import api from "../api/client";
+import api, { ensureValidAccessToken } from "../api/client";
 import AIEditPanel from "../components/AIEditPanel";
 import CollaborativeTextarea from "../components/CollaborativeTextarea";
+import RichTextEditor from "../components/RichTextEditor";
+import { getStoredAccessToken, getStoredRefreshToken } from "../lib/session";
 import {
   applyTextOperation,
   diffToOperation,
@@ -66,9 +68,38 @@ function wait(delay) {
   });
 }
 
+function escapeHtml(text) {
+  return text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function looksLikeHtml(value) {
+  return /<\/?[a-z][\s\S]*>/i.test(value || "");
+}
+
+function toRichTextContent(value) {
+  const rawValue = value || "";
+  if (!rawValue.trim()) {
+    return "<p></p>";
+  }
+
+  if (looksLikeHtml(rawValue)) {
+    return rawValue;
+  }
+
+  return rawValue
+    .replace(/\r\n/g, "\n")
+    .split(/\n{2,}/)
+    .map((block) => `<p>${escapeHtml(block).replace(/\n/g, "<br />")}</p>`)
+    .join("");
+}
+
 function EditorPage() {
   const documentId = window.location.pathname.split("/").pop();
-  const authToken = localStorage.getItem("access_token") || "";
 
   const textareaRef = useRef(null);
   const wsRef = useRef(null);
@@ -102,12 +133,14 @@ function EditorPage() {
   const [shareLinks, setShareLinks] = useState([]);
   const [shareLinkRole, setShareLinkRole] = useState("viewer");
   const [shareLinkExpiry, setShareLinkExpiry] = useState("24");
+  const [editorMode, setEditorMode] = useState("rich");
 
   const authHeader = () => ({
-    Authorization: `Bearer ${authToken}`,
+    Authorization: `Bearer ${getStoredAccessToken()}`,
   });
 
   const readOnly = currentRole === "viewer" || connectionState !== "connected";
+  const richTextValue = toRichTextContent(content);
 
   const loadVersions = async () => {
     try {
@@ -203,13 +236,27 @@ function EditorPage() {
     );
   };
 
-  const connectRealtime = () => {
-    if (!authToken) {
+  const connectRealtime = async () => {
+    if (!getStoredAccessToken() && !getStoredRefreshToken()) {
       return;
     }
 
     window.clearTimeout(reconnectTimerRef.current);
     shouldReconnectRef.current = true;
+
+    let authToken = "";
+    try {
+      authToken = await ensureValidAccessToken();
+    } catch {
+      setConnectionState("disconnected");
+      setStatus("Session expired. Please sign in again.");
+      window.location.href = "/login";
+      return;
+    }
+
+    if (!authToken) {
+      return;
+    }
 
     const baseUrl = api.defaults.baseURL.replace(/^http/, "ws");
     const socket = new WebSocket(
@@ -348,7 +395,7 @@ function EditorPage() {
       };
     }
     return undefined;
-  }, [documentId, authToken, error]);
+  }, [documentId, error]);
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -440,6 +487,16 @@ function EditorPage() {
     setStatus("Syncing edits...");
     sendNextPendingOperation();
     queueCursorUpdate();
+  };
+
+  const handleRichTextChange = (nextContent) => {
+    const normalizedContent = nextContent === "<p></p>" ? "" : nextContent;
+    const nextSelection = {
+      start: normalizedContent.length,
+      end: normalizedContent.length,
+    };
+
+    handleContentChange(normalizedContent, nextSelection);
   };
 
   const handleApplySuggestion = async ({ suggestion, sourceText }) => {
@@ -692,21 +749,59 @@ function EditorPage() {
               <div>
                 <h3>Draft</h3>
                 <p className="muted-text">
-                  Live edits use OT over websockets, and collaborator cursors stay visible in real time.
+                  Rich text formatting is available in the formatted editor, while source mode keeps
+                  live OT collaboration and remote cursors visible on the underlying document markup.
                 </p>
               </div>
             </div>
 
-            <CollaborativeTextarea
-              value={content}
-              selection={selection}
-              localClientId={localClientId}
-              remoteParticipants={remoteParticipants}
-              readOnly={readOnly}
-              textareaRef={textareaRef}
-              onTextChange={handleContentChange}
-              onSelectionChange={handleSelectionChange}
-            />
+            <div className="ai-source-switcher">
+              <button
+                className={`pill-toggle ${editorMode === "rich" ? "active" : ""}`}
+                type="button"
+                onClick={() => setEditorMode("rich")}
+              >
+                Rich text
+              </button>
+              <button
+                className={`pill-toggle ${editorMode === "source" ? "active" : ""}`}
+                type="button"
+                onClick={() => setEditorMode("source")}
+              >
+                Source collaboration
+              </button>
+            </div>
+
+            {editorMode === "rich" ? (
+              <div className="editor-card">
+                <RichTextEditor
+                  value={richTextValue}
+                  onChange={handleRichTextChange}
+                  readOnly={readOnly}
+                />
+                <p className="muted-text compact-text rich-editor-note">
+                  Use headings, bold, italic, lists, and code blocks here. Switch to source
+                  collaboration when you need live cursor tracking on the document markup.
+                </p>
+              </div>
+            ) : (
+              <>
+                <CollaborativeTextarea
+                  value={content}
+                  selection={selection}
+                  localClientId={localClientId}
+                  remoteParticipants={remoteParticipants}
+                  readOnly={readOnly}
+                  textareaRef={textareaRef}
+                  onTextChange={handleContentChange}
+                  onSelectionChange={handleSelectionChange}
+                />
+                <p className="muted-text compact-text rich-editor-note">
+                  Source collaboration shows the stored document markup so OT and remote selections
+                  stay exact.
+                </p>
+              </>
+            )}
 
             <div className="presence-list">
               {(remoteParticipants || []).map((participant) => (
@@ -727,7 +822,7 @@ function EditorPage() {
           </div>
 
           <AIEditPanel
-            authToken={authToken}
+            documentId={documentId}
             documentText={content}
             selectedText={content.slice(selection.start, selection.end)}
             readOnly={currentRole === "viewer"}

@@ -517,6 +517,10 @@ select {
   overflow: hidden;
 }
 
+.rich-editor-note {
+  padding: 0 18px 18px;
+}
+
 .editor-surface-card {
   position: relative;
   overflow: hidden;

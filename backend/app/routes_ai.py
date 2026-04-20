@@ -11,6 +11,7 @@ except ImportError:  # pragma: no cover - handled at runtime when AI is invoked
 
 from app.auth import get_current_user
 from app.models import AIGenerateRequest, AIRewriteRequest
+from app.storage import DOCUMENTS_BY_ID, DOCUMENT_PERMISSIONS
 
 router = APIRouter(prefix="/api/v1/ai", tags=["AI"])
 
@@ -18,6 +19,21 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
 OPENAI_REASONING_EFFORT = os.getenv("OPENAI_REASONING_EFFORT", "low")
 OPENAI_VERBOSITY = os.getenv("OPENAI_VERBOSITY", "low")
 AI_MOCK_MODE = os.getenv("AI_MOCK_MODE", "").lower() in {"1", "true", "yes", "on"}
+
+
+def require_ai_access(document_id: str, user_id: str) -> str:
+    document = DOCUMENTS_BY_ID.get(document_id)
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    role = DOCUMENT_PERMISSIONS.get(document_id, {}).get(user_id)
+    if not role:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if role not in {"owner", "editor"}:
+        raise HTTPException(status_code=403, detail="You do not have AI access for this document")
+
+    return role
 
 
 def get_openai_client() -> OpenAI:
@@ -185,7 +201,7 @@ def stream_generated_text(stream):
 
 @router.post("/generate")
 def generate(payload: AIGenerateRequest, current_user=Depends(get_current_user)):
-    _ = current_user
+    require_ai_access(payload.document_id, current_user["user_id"])
     client = get_openai_client()
     try:
         stream = create_generation_stream(client, payload)
@@ -201,6 +217,10 @@ def generate(payload: AIGenerateRequest, current_user=Depends(get_current_user))
 @router.post("/rewrite")
 def rewrite(payload: AIRewriteRequest, current_user=Depends(get_current_user)):
     return generate(
-        AIGenerateRequest(selected_text=payload.text, action="rewrite"),
+        AIGenerateRequest(
+            document_id=payload.document_id,
+            selected_text=payload.text,
+            action="rewrite",
+        ),
         current_user=current_user,
     )

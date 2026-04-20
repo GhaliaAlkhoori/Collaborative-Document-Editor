@@ -6,7 +6,7 @@ import { vi } from "vitest";
 import EditorPage from "../../../src/pages/EditorPage";
 import { renderWithAuth } from "../support/renderWithAuth";
 
-const { apiMock } = vi.hoisted(() => ({
+const { apiMock, ensureValidAccessTokenMock } = vi.hoisted(() => ({
   apiMock: {
     post: vi.fn(),
     get: vi.fn(),
@@ -16,10 +16,25 @@ const { apiMock } = vi.hoisted(() => ({
       baseURL: "http://127.0.0.1:8001",
     },
   },
+  ensureValidAccessTokenMock: vi.fn(),
 }));
 
 vi.mock("../../../src/api/client", () => ({
   default: apiMock,
+  ensureValidAccessToken: ensureValidAccessTokenMock,
+}));
+
+vi.mock("../../../src/components/RichTextEditor", () => ({
+  default: ({ value, onChange, readOnly }) => (
+    <div>
+      <div>Rich text editor</div>
+      <div>{readOnly ? "Read only rich text" : "Editable rich text"}</div>
+      <div>{value}</div>
+      <button type="button" onClick={() => onChange("<h1>Formatted draft</h1>")}>
+        Apply rich formatting
+      </button>
+    </div>
+  ),
 }));
 
 class MockWebSocket {
@@ -59,7 +74,24 @@ class MockWebSocket {
   }
 
   send(message) {
-    this.sent.push(JSON.parse(message));
+    const parsedMessage = JSON.parse(message);
+    this.sent.push(parsedMessage);
+
+    if (parsedMessage.type === "operation") {
+      window.setTimeout(() => {
+        this.onmessage?.({
+          data: JSON.stringify({
+            type: "operation_applied",
+            client_id: "client-1",
+            client_op_id: parsedMessage.client_op_id,
+            version: 2,
+            updated_at: "2026-04-20T00:01:00Z",
+            operation: parsedMessage.operation,
+            participants: [],
+          }),
+        });
+      }, 0);
+    }
   }
 
   close() {
@@ -72,6 +104,8 @@ beforeEach(() => {
   apiMock.post.mockReset();
   apiMock.patch.mockReset();
   apiMock.delete.mockReset();
+  ensureValidAccessTokenMock.mockReset();
+  ensureValidAccessTokenMock.mockResolvedValue("token-123");
   vi.stubGlobal("WebSocket", MockWebSocket);
   window.history.replaceState({}, "", "/documents/doc-123");
   window.location.pathname = "/documents/doc-123";
@@ -135,6 +169,7 @@ test("loads the editor view and saves a snapshot", async () => {
   expect(await screen.findByDisplayValue("Realtime Plan")).toBeInTheDocument();
   expect(await screen.findByText("Create share link")).toBeInTheDocument();
   expect(await screen.findByText("Connected")).toBeInTheDocument();
+  expect(screen.getByText("Rich text editor")).toBeInTheDocument();
 
   await user.click(screen.getByRole("button", { name: "Save snapshot" }));
 
@@ -248,4 +283,84 @@ test("grants document access to a collaborator from the sharing panel", async ()
 
   expect(await screen.findByText("Access granted as editor.")).toBeInTheDocument();
   expect(screen.getByText("Editor User")).toBeInTheDocument();
+});
+
+/**
+ * Verifies the formatted editor is available in the live document flow by
+ * switching between rich and source modes, applying a formatted HTML change,
+ * and saving the updated markup through the snapshot API.
+ */
+test("saves rich text formatting through the document editor", async () => {
+  const user = userEvent.setup();
+  apiMock.get.mockImplementation((url) => {
+    if (url === "/api/v1/documents/doc-123") {
+      return Promise.resolve({
+        data: {
+          title: "Realtime Plan",
+          content: "Initial content",
+          version: 1,
+          updated_at: "2026-04-20T00:00:00Z",
+          current_role: "owner",
+          collaborators: [],
+        },
+      });
+    }
+
+    if (url === "/api/v1/documents/doc-123/versions") {
+      return Promise.resolve({
+        data: {
+          versions: [
+            {
+              version: 1,
+              title: "Realtime Plan",
+              content: "Initial content",
+              saved_at: "2026-04-20T00:00:00Z",
+            },
+          ],
+        },
+      });
+    }
+
+    if (url === "/api/v1/documents/doc-123/share-links") {
+      return Promise.resolve({
+        data: {
+          links: [],
+        },
+      });
+    }
+
+    return Promise.reject(new Error(`Unexpected GET ${url}`));
+  });
+  apiMock.patch.mockResolvedValueOnce({
+    data: {
+      version: 3,
+      updated_at: "2026-04-20T00:05:00Z",
+    },
+  });
+
+  renderWithAuth(<EditorPage />, { token: "token-123" });
+
+  expect(await screen.findByText("Rich text editor")).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Source collaboration" }));
+  expect(screen.getByPlaceholderText("Start writing here...")).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "Rich text" }));
+  await user.click(screen.getByRole("button", { name: "Apply rich formatting" }));
+  await user.click(screen.getByRole("button", { name: "Save snapshot" }));
+
+  await waitFor(() => {
+    expect(apiMock.patch).toHaveBeenCalledWith(
+      "/api/v1/documents/doc-123",
+      {
+        title: "Realtime Plan",
+        content: "<h1>Formatted draft</h1>",
+        base_version: 2,
+      },
+      {
+        headers: {
+          Authorization: "Bearer token-123",
+        },
+      }
+    );
+  });
 });

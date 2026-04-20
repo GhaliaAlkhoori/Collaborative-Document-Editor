@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import api from "../api/client";
+import api, { fetchWithAuth } from "../api/client";
 import {
   buildSuggestionBlocks,
   composeSuggestionText,
@@ -18,7 +18,7 @@ function toggleAllBlocks(blocks, accepted) {
 }
 
 function AIEditPanel({
-  authToken,
+  documentId,
   documentText,
   selectedText,
   readOnly = false,
@@ -70,6 +70,11 @@ function AIEditPanel({
       return;
     }
 
+    if (!documentId) {
+      setError("AI suggestions require a saved document.");
+      return;
+    }
+
     setLoading(true);
     setError("");
     setSuggestion("");
@@ -77,13 +82,13 @@ function AIEditPanel({
     setStreamingText("");
 
     try {
-      const response = await fetch(`${api.defaults.baseURL}/api/v1/ai/generate`, {
+      const response = await fetchWithAuth(`${api.defaults.baseURL}/api/v1/ai/generate`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${authToken}`,
         },
         body: JSON.stringify({
+          document_id: documentId,
           selected_text: inputText,
           action,
           options: {

@@ -1,12 +1,36 @@
 import { useEffect, useState } from "react";
-import api from "../api/client";
+import api, { ensureValidAccessToken } from "../api/client";
+import { getStoredAccessToken } from "../lib/session";
 
 function ShareLinkPage() {
   const token = window.location.pathname.split("/").pop();
-  const authToken = localStorage.getItem("access_token") || "";
+  const [authToken, setAuthToken] = useState(() => getStoredAccessToken());
   const [preview, setPreview] = useState(null);
   const [error, setError] = useState("");
   const [status, setStatus] = useState("Checking link...");
+
+  useEffect(() => {
+    let active = true;
+
+    const restoreSession = async () => {
+      try {
+        const nextToken = await ensureValidAccessToken();
+        if (active) {
+          setAuthToken(nextToken || "");
+        }
+      } catch {
+        if (active) {
+          setAuthToken("");
+        }
+      }
+    };
+
+    restoreSession();
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;

@@ -15,6 +15,7 @@ const { apiMock } = vi.hoisted(() => ({
 
 vi.mock("../../../src/api/client", () => ({
   default: apiMock,
+  fetchWithAuth: (...args) => fetch(...args),
 }));
 
 function createStreamingResponse(chunks) {
@@ -66,7 +67,7 @@ test("streams a suggestion and applies a partially accepted result", async () =>
 
   render(
     <AIEditPanel
-      authToken="token-123"
+      documentId="doc-123"
       documentText={sourceText}
       selectedText=""
       onApplySuggestion={onApplySuggestion}
@@ -108,7 +109,7 @@ test("shows a clear error message when generation fails", async () => {
 
   render(
     <AIEditPanel
-      authToken="token-123"
+      documentId="doc-123"
       documentText="Short source text"
       selectedText=""
       onApplySuggestion={vi.fn()}

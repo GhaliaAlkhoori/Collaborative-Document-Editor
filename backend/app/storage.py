@@ -21,6 +21,7 @@ DOCUMENT_VERSIONS: Dict[str, List[Dict[str, Any]]] = {}
 DOCUMENT_OPERATION_HISTORY: Dict[str, List[Dict[str, Any]]] = {}
 AI_LOGS: Dict[str, List[Dict[str, Any]]] = {}
 SHARE_LINKS_BY_TOKEN: Dict[str, Dict[str, Any]] = {}
+REFRESH_TOKENS_BY_TOKEN: Dict[str, Dict[str, Any]] = {}
 
 ROLE_PRIORITY = {
     "viewer": 0,
@@ -64,6 +65,47 @@ def create_document(owner_id: str, title: str) -> Dict[str, Any]:
     ]
     DOCUMENT_OPERATION_HISTORY[doc["document_id"]] = []
     return doc
+
+
+def create_refresh_token(user_id: str, expires_in_days: int) -> Dict[str, Any]:
+    refresh_token = {
+        "token": new_id(),
+        "user_id": user_id,
+        "created_at": now_iso(),
+        "expires_at": (datetime.now(timezone.utc) + timedelta(days=expires_in_days)).isoformat(),
+        "revoked_at": None,
+    }
+    REFRESH_TOKENS_BY_TOKEN[refresh_token["token"]] = refresh_token
+    return refresh_token
+
+
+def refresh_token_is_active(refresh_token: Dict[str, Any]) -> bool:
+    if refresh_token.get("revoked_at"):
+        return False
+
+    expires_at = refresh_token.get("expires_at")
+    if expires_at and datetime.fromisoformat(expires_at) <= datetime.now(timezone.utc):
+        return False
+
+    return True
+
+
+def get_active_refresh_token(token: str) -> Optional[Dict[str, Any]]:
+    refresh_token = REFRESH_TOKENS_BY_TOKEN.get(token)
+    if not refresh_token or not refresh_token_is_active(refresh_token):
+        return None
+    return refresh_token
+
+
+def revoke_refresh_token(token: str) -> Optional[Dict[str, Any]]:
+    refresh_token = REFRESH_TOKENS_BY_TOKEN.get(token)
+    if not refresh_token:
+        return None
+
+    if not refresh_token.get("revoked_at"):
+        refresh_token["revoked_at"] = now_iso()
+
+    return refresh_token
 
 
 def delete_document(document_id: str) -> Optional[Dict[str, Any]]:

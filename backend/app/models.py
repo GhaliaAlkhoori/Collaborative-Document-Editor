@@ -38,10 +38,21 @@ class LoginRequest(BaseModel):
 
 class LoginResponse(BaseModel):
     access_token: str
+    refresh_token: str
     token_type: str
     expires_in: int
+    refresh_expires_in: int
     user_id: str
     name: str
+    email: EmailStr
+
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str = Field(min_length=1)
+
+
+class RefreshResponse(LoginResponse):
+    pass
 
 
 class UserRecord(BaseModel):
@@ -187,10 +198,12 @@ class AIOptions(BaseModel):
 
 
 class AIGenerateRequest(BaseModel):
+    document_id: str = Field(min_length=1)
     selected_text: str = Field(min_length=1)
     action: AIAction = "rewrite"
     options: AIOptions = Field(default_factory=AIOptions)
 
 
 class AIRewriteRequest(BaseModel):
+    document_id: str = Field(min_length=1)
     text: str = Field(min_length=1)
