@@ -66,6 +66,27 @@ def create_document(owner_id: str, title: str) -> Dict[str, Any]:
     return doc
 
 
+def delete_document(document_id: str) -> Optional[Dict[str, Any]]:
+    document = DOCUMENTS_BY_ID.pop(document_id, None)
+    if not document:
+        return None
+
+    DOCUMENT_PERMISSIONS.pop(document_id, None)
+    DOCUMENT_VERSIONS.pop(document_id, None)
+    DOCUMENT_OPERATION_HISTORY.pop(document_id, None)
+    AI_LOGS.pop(document_id, None)
+
+    tokens_to_remove = [
+        token
+        for token, share_link in SHARE_LINKS_BY_TOKEN.items()
+        if share_link["document_id"] == document_id
+    ]
+    for token in tokens_to_remove:
+        SHARE_LINKS_BY_TOKEN.pop(token, None)
+
+    return document
+
+
 def save_document_version(document_id: str) -> None:
     doc = DOCUMENTS_BY_ID[document_id]
     DOCUMENT_VERSIONS[document_id].append(

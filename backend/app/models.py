@@ -65,6 +65,11 @@ class CreateDocumentResponse(BaseModel):
     version: int
 
 
+class DeleteDocumentResponse(BaseModel):
+    document_id: str
+    deleted_at: str
+
+
 class CollaboratorEntry(BaseModel):
     user_id: str
     role: Role

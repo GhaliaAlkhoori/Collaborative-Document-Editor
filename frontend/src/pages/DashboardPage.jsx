@@ -8,6 +8,7 @@ function DashboardPage() {
   const [documents, setDocuments] = useState([]);
   const [newTitle, setNewTitle] = useState("");
   const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
 
   const authHeader = () => ({
     Authorization: `Bearer ${localStorage.getItem("access_token")}`,
@@ -19,6 +20,7 @@ function DashboardPage() {
         headers: authHeader(),
       });
       setDocuments(res.data.documents || []);
+      setError("");
     } catch {
       setError("Failed to load documents.");
     }
@@ -38,6 +40,8 @@ function DashboardPage() {
     if (!newTitle.trim()) return;
 
     try {
+      setError("");
+      setMessage("");
       const res = await api.post(
         "/api/v1/documents",
         { title: newTitle },
@@ -48,6 +52,22 @@ function DashboardPage() {
       window.location.href = `/documents/${res.data.document_id}`;
     } catch {
       setError("Failed to create document.");
+    }
+  };
+
+  const deleteDocument = async (documentId) => {
+    try {
+      setError("");
+      setMessage("");
+      await api.delete(`/api/v1/documents/${documentId}`, {
+        headers: authHeader(),
+      });
+      setDocuments((currentDocuments) =>
+        currentDocuments.filter((document) => document.document_id !== documentId)
+      );
+      setMessage("Document deleted.");
+    } catch {
+      setError("Failed to delete document.");
     }
   };
 
@@ -92,6 +112,7 @@ function DashboardPage() {
       </div>
 
       {error && <p style={{ color: "red" }}>{error}</p>}
+      {message && <p style={{ color: "green" }}>{message}</p>}
 
       <div
         style={{
@@ -153,6 +174,27 @@ function DashboardPage() {
             <p style={{ color: "#6d6272", marginTop: "8px" }}>
               Role: {doc.role}
             </p>
+            {doc.role === "owner" ? (
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  deleteDocument(doc.document_id);
+                }}
+                style={{
+                  marginTop: "12px",
+                  padding: "10px 14px",
+                  borderRadius: "10px",
+                  border: "1px solid #ead2d2",
+                  background: "#fff6f6",
+                  color: "#9f1239",
+                  fontWeight: "600",
+                  cursor: "pointer",
+                }}
+              >
+                Delete
+              </button>
+            ) : null}
           </div>
         ))}
       </div>

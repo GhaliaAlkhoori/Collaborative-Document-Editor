@@ -25,6 +25,7 @@ vi.mock("../../../src/api/client", () => ({
 beforeEach(() => {
   apiMock.post.mockReset();
   apiMock.get.mockReset();
+  apiMock.delete.mockReset();
 });
 
 /**
@@ -90,4 +91,52 @@ test("creates a new document with the current bearer token", async () => {
       }
     );
   });
+});
+
+/**
+ * Verifies owners can delete documents from the dashboard by clicking the card
+ * action, calling the delete API with the bearer token, and removing the card
+ * from the rendered list without opening the editor route.
+ */
+test("deletes an owned document from the dashboard", async () => {
+  const user = userEvent.setup();
+  apiMock.get.mockResolvedValueOnce({
+    data: {
+      documents: [
+        {
+          document_id: "doc-1",
+          title: "Project Plan",
+          role: "owner",
+        },
+        {
+          document_id: "doc-2",
+          title: "Shared Notes",
+          role: "editor",
+        },
+      ],
+    },
+  });
+  apiMock.delete.mockResolvedValueOnce({
+    data: {
+      document_id: "doc-1",
+    },
+  });
+
+  renderWithAuth(<DashboardPage />, { token: "token-123" });
+
+  expect(await screen.findByText("Project Plan")).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "Delete" }));
+
+  await waitFor(() => {
+    expect(apiMock.delete).toHaveBeenCalledWith("/api/v1/documents/doc-1", {
+      headers: {
+        Authorization: "Bearer token-123",
+      },
+    });
+  });
+
+  expect(screen.queryByText("Project Plan")).not.toBeInTheDocument();
+  expect(screen.getByText("Document deleted.")).toBeInTheDocument();
+  expect(screen.getByText("Shared Notes")).toBeInTheDocument();
 });

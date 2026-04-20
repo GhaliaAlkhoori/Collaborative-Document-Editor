@@ -5,6 +5,7 @@ from app.auth import get_current_user
 from app.models import (
     CreateDocumentRequest,
     CreateDocumentResponse,
+    DeleteDocumentResponse,
     GetDocumentResponse,
     UpdateDocumentRequest,
     UpdateDocumentResponse,
@@ -29,6 +30,7 @@ from app.storage import (
     USERS_BY_EMAIL,
     create_document,
     create_share_link,
+    delete_document,
     grant_document_access,
     list_document_share_links,
     now_iso,
@@ -59,7 +61,7 @@ def require_document_access(document_id: str, user_id: str):
 def require_owner_access(document_id: str, user_id: str):
     doc, role = require_document_access(document_id, user_id)
     if role != "owner":
-        raise HTTPException(status_code=403, detail="Only owner can manage sharing")
+        raise HTTPException(status_code=403, detail="Only owner can manage this document")
     return doc
 
 
@@ -86,6 +88,17 @@ def create_document_route(payload: CreateDocumentRequest, current_user=Depends(g
         created_at=doc["created_at"],
         updated_at=doc["updated_at"],
         version=doc["version"],
+    )
+
+
+@router.delete("/{document_id}", response_model=DeleteDocumentResponse)
+def delete_document_route(document_id: str, current_user=Depends(get_current_user)):
+    _doc = require_owner_access(document_id, current_user["user_id"])
+    deleted = delete_document(document_id)
+
+    return DeleteDocumentResponse(
+        document_id=document_id,
+        deleted_at=now_iso(),
     )
 
 

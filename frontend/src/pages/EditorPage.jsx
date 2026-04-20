@@ -96,6 +96,7 @@ function EditorPage() {
   const [versions, setVersions] = useState([]);
   const [versionError, setVersionError] = useState("");
   const [shareEmail, setShareEmail] = useState("");
+  const [shareRole, setShareRole] = useState("viewer");
   const [shareMessage, setShareMessage] = useState("");
   const [shareError, setShareError] = useState("");
   const [shareLinks, setShareLinks] = useState([]);
@@ -526,6 +527,37 @@ function EditorPage() {
     setShareMessage("Email draft opened.");
   };
 
+  const handleGrantAccess = async () => {
+    const trimmedEmail = shareEmail.trim();
+    if (!trimmedEmail) {
+      setShareMessage("");
+      setShareError("Enter an email address first.");
+      return;
+    }
+
+    setShareMessage("");
+    setShareError("");
+
+    try {
+      const response = await api.post(
+        `/api/v1/documents/${documentId}/share`,
+        {
+          user_email: trimmedEmail,
+          role: shareRole,
+        },
+        {
+          headers: authHeader(),
+        }
+      );
+
+      await loadDocument();
+      setShareMessage(`Access granted as ${response.data.role}.`);
+      setShareEmail("");
+    } catch (err) {
+      setShareError(err?.response?.data?.detail || "Failed to share document access.");
+    }
+  };
+
   const handleCreateShareLink = async () => {
     setShareMessage("");
     setShareError("");
@@ -743,7 +775,7 @@ function EditorPage() {
               <>
                 <div className="stack-list">
                   <div className="stack-item stack-item-form">
-                    <label className="field-label">Email this document</label>
+                    <label className="field-label">Share with a collaborator</label>
                     <input
                       type="email"
                       className="input"
@@ -751,9 +783,26 @@ function EditorPage() {
                       onChange={(event) => setShareEmail(event.target.value)}
                       placeholder="name@example.com"
                     />
-                    <button className="secondary-button" type="button" onClick={handleShare}>
-                      Email link
-                    </button>
+                    <select
+                      className="input"
+                      value={shareRole}
+                      onChange={(event) => setShareRole(event.target.value)}
+                    >
+                      <option value="viewer">Viewer access</option>
+                      <option value="editor">Editor access</option>
+                    </select>
+                    <div className="inline-actions">
+                      <button
+                        className="secondary-button"
+                        type="button"
+                        onClick={handleGrantAccess}
+                      >
+                        Grant access
+                      </button>
+                      <button className="ghost-button" type="button" onClick={handleShare}>
+                        Email link
+                      </button>
+                    </div>
                   </div>
 
                   <div className="stack-item stack-item-form">

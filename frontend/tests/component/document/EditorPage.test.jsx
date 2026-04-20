@@ -154,3 +154,98 @@ test("loads the editor view and saves a snapshot", async () => {
     );
   });
 });
+
+/**
+ * Verifies owners can share document access by email with a selected role by
+ * submitting the sharing form, posting the backend request, and refreshing the
+ * collaborator list from the document endpoint.
+ */
+test("grants document access to a collaborator from the sharing panel", async () => {
+  const user = userEvent.setup();
+  apiMock.get.mockImplementation((url) => {
+    if (url === "/api/v1/documents/doc-123") {
+      return Promise.resolve({
+        data: {
+          title: "Realtime Plan",
+          content: "Initial content",
+          version: 1,
+          updated_at: "2026-04-20T00:00:00Z",
+          current_role: "owner",
+          collaborators: [
+            {
+              user_id: "owner-1",
+              role: "owner",
+              name: "Owner",
+              email: "owner@example.com",
+            },
+            {
+              user_id: "editor-2",
+              role: "editor",
+              name: "Editor User",
+              email: "editor@example.com",
+            },
+          ],
+        },
+      });
+    }
+
+    if (url === "/api/v1/documents/doc-123/versions") {
+      return Promise.resolve({
+        data: {
+          versions: [
+            {
+              version: 1,
+              title: "Realtime Plan",
+              content: "Initial content",
+              saved_at: "2026-04-20T00:00:00Z",
+            },
+          ],
+        },
+      });
+    }
+
+    if (url === "/api/v1/documents/doc-123/share-links") {
+      return Promise.resolve({
+        data: {
+          links: [],
+        },
+      });
+    }
+
+    return Promise.reject(new Error(`Unexpected GET ${url}`));
+  });
+  apiMock.post.mockResolvedValueOnce({
+    data: {
+      document_id: "doc-123",
+      user_id: "editor-2",
+      role: "editor",
+      granted_at: "2026-04-20T00:02:00Z",
+    },
+  });
+
+  renderWithAuth(<EditorPage />, { token: "token-123" });
+
+  expect(await screen.findByText("Share with a collaborator")).toBeInTheDocument();
+
+  await user.type(screen.getByPlaceholderText("name@example.com"), "editor@example.com");
+  await user.selectOptions(screen.getByDisplayValue("Viewer access"), "editor");
+  await user.click(screen.getByRole("button", { name: "Grant access" }));
+
+  await waitFor(() => {
+    expect(apiMock.post).toHaveBeenCalledWith(
+      "/api/v1/documents/doc-123/share",
+      {
+        user_email: "editor@example.com",
+        role: "editor",
+      },
+      {
+        headers: {
+          Authorization: "Bearer token-123",
+        },
+      }
+    );
+  });
+
+  expect(await screen.findByText("Access granted as editor.")).toBeInTheDocument();
+  expect(screen.getByText("Editor User")).toBeInTheDocument();
+});

@@ -26,6 +26,28 @@ npm run dev
 ```
 
 To enable the live AI assistant, create `backend/.env` from `backend/.env.example` and add your `OPENAI_API_KEY` before starting the backend.
+
+### Running Tests
+
+```bash
+# Run every test from the project root
+./run-tests.sh
+
+# Run every test with a specific Python interpreter
+PYTHON_BIN=python3 ./run-tests.sh
+
+# Run backend tests only
+cd backend
+python3 -m pytest
+
+# Run frontend component tests only
+cd frontend
+npm run test:component
+
+# Run frontend end-to-end tests only
+cd frontend
+npm run test:e2e
+```
 ---
 
 ## Overview
